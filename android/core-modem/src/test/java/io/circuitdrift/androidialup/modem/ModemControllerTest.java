@@ -318,7 +318,7 @@ class ModemControllerTest {
         assertEquals("AT\rOK\r\n", out.text(), "LF after CR is ignored and not echoed");
         out.clear();
         controller.feedDte(b("ATX\b\r"), 0);
-        assertEquals("ATX\bOK\r\n", out.text(), "backspace removes the previous byte");
+        assertEquals("ATX\b\rOK\r\n", out.text(), "backspace removes the previous byte");
     }
 
     @Test
