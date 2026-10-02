@@ -187,7 +187,7 @@ family tests. These are first-order X1 experiments.
 | V.34 | ≤33.6 kbit/s | Expected failure (as above) | No evidence | Not worth lab time beyond handshake capture |
 | Group 3 fax V.27ter/V.29/V.17 | 2.4–14.4 kbit/s | Industry: fails over compressed codecs; GSM used TS 43.045 adaptor instead | Industry: fails | Negative control E-05 |
 | CTM | TTY-class | Designed to work (PRIMARY) | Not used in IMS (RTT instead) | Positive control E-03 |
-| Codec-aware DoV | 1–4 kbit/s class (NB codecs, SECONDARY/STRONG SECONDARY) | Unmeasured on WB/EVS | Primary X1 target E-06..E-09 |
+| Codec-aware DoV | 1–4 kbit/s class | Demonstrated on NB codecs (SECONDARY/STRONG SECONDARY, §3.2) | Unmeasured on WB/EVS | Primary X1 target E-06..E-09 |
 
 ---
 
