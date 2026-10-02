@@ -142,7 +142,7 @@ class RelaySessionDeadlineTest {
         assertEquals(DialFailure.TIMEOUT, failed.reason());
         assertEquals(RelaySessionMachine.BACKEND_NO_ANSWER, failed.terminalReason());
         assertEquals(RelaySessionMachine.State.HANGING_UP, machine.state());
-        assertTrue(machine.onTimer(200_000).isEmpty());
+        assertTrue(machine.onTimer(83_999).isEmpty(), "only the 3 s disconnect grace remains armed");
 
         // The relay completes the hangup; the call already had its single terminal action.
         assertTrue(machine.onFrame(frame(FrameKind.HANGUP_ACK, new HangupAck(), callId, sessionId, hangup.requestId()), 81_010).isEmpty());
@@ -179,6 +179,33 @@ class RelaySessionDeadlineTest {
         assertTrue(machine.onTimer(25_000).isEmpty());
         assertTrue(machine.onTimer(90_000).isEmpty());
         assertEquals(RelaySessionMachine.State.IDLE, machine.state());
+    }
+
+    @Test
+    void cleanDisconnectGraceClosesTransportWhenRelayNeverConfirmsHangup() {
+        authenticate(0);
+        acceptDial(20_000, 21_000);
+        machine.onFrame(frame(FrameKind.CALL_PROGRESS, new CallProgress(ProgressPhase.CONNECTED, null), callId, sessionId, 0), 22_000);
+        only(machine.hangup("LOCAL_HANGUP"));
+        // hangup() takes no time argument: the grace runs from the latest time the machine saw.
+        assertEquals(RelaySessionMachine.Deadline.HANGUP_GRACE, machine.activeDeadline());
+        assertTrue(machine.onTimer(24_999).isEmpty());
+        List<RelaySessionMachine.Action> actions = machine.onTimer(25_000);
+        var failed = assertInstanceOf(RelaySessionMachine.TransportFailed.class, actions.get(0));
+        assertEquals(RelaySessionMachine.RELAY_UNAVAILABLE, failed.reason());
+        assertEquals(RelaySessionMachine.State.FAILED, machine.state());
+    }
+
+    @Test
+    void callTerminatedWithinGraceCancelsIt() {
+        authenticate(0);
+        acceptDial(20_000, 21_000);
+        AduFrame hangup = only(machine.hangup("LOCAL_HANGUP"));
+        machine.onFrame(frame(FrameKind.HANGUP_ACK, new HangupAck(), callId, sessionId, hangup.requestId()), 21_100);
+        machine.onFrame(frame(FrameKind.CALL_TERMINATED, new CallTerminated("LOCAL_HANGUP", TerminationSource.RELAY, null),
+                callId, sessionId, 0), 21_200);
+        assertEquals(RelaySessionMachine.Deadline.NONE, machine.activeDeadline());
+        assertTrue(machine.onTimer(100_000).isEmpty());
     }
 
     @Test

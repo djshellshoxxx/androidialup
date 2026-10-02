@@ -31,6 +31,8 @@ public final class RelaySessionMachine {
     public static final long DIAL_ACK_DEADLINE_MS = 5_000;
     /** S1_SPEC_FREEZE section 7: backend dial setup, DIAL_ACCEPTED to CALL_PROGRESS(CONNECTED). */
     public static final long DIAL_SETUP_DEADLINE_MS = 60_000;
+    /** S1_SPEC_FREEZE section 7: clean disconnect grace, HANGUP_REQUEST/ACK to CALL_TERMINATED. */
+    public static final long HANGUP_GRACE_MS = 3_000;
 
     // S1_SPEC_FREEZE section 12 error taxonomy names used by this machine.
     public static final String AUTH_FAILURE = "AUTH_FAILURE";
@@ -49,7 +51,7 @@ public final class RelaySessionMachine {
     }
 
     /** The single protocol deadline currently armed, if any. */
-    public enum Deadline { NONE, AUTHENTICATION, DIAL_ACK, DIAL_SETUP }
+    public enum Deadline { NONE, AUTHENTICATION, DIAL_ACK, DIAL_SETUP, HANGUP_GRACE }
 
     /**
      * Computes {@code AUTH_RESPONSE.proof}. {@code relayId} is the value from HELLO_ACK and
@@ -66,19 +68,24 @@ public final class RelaySessionMachine {
      * always advertises the full window. With {@code true} the host reports consumption through
      * {@link #onInboundConsumed(long)} and FLOW_STATUS advertises the remaining buffer.
      */
-    public record Options(long authDeadlineMs, long dialAckDeadlineMs, long dialSetupDeadlineMs, boolean manualInboundConsumption) {
-        public static final Options DEFAULTS = new Options(AUTH_DEADLINE_MS, DIAL_ACK_DEADLINE_MS, DIAL_SETUP_DEADLINE_MS, false);
+    public record Options(long authDeadlineMs, long dialAckDeadlineMs, long dialSetupDeadlineMs, long hangupGraceMs,
+                          boolean manualInboundConsumption) {
+        public static final Options DEFAULTS = new Options(AUTH_DEADLINE_MS, DIAL_ACK_DEADLINE_MS, DIAL_SETUP_DEADLINE_MS,
+                HANGUP_GRACE_MS, false);
         public Options {
-            if (authDeadlineMs <= 0 || dialAckDeadlineMs <= 0 || dialSetupDeadlineMs <= 0) {
+            if (authDeadlineMs <= 0 || dialAckDeadlineMs <= 0 || dialSetupDeadlineMs <= 0 || hangupGraceMs <= 0) {
                 throw new IllegalArgumentException("deadlines must be positive");
             }
             if (dialSetupDeadlineMs > 0xffff_ffffL) throw new IllegalArgumentException("dialSetupDeadlineMs must fit u32");
         }
         public Options withDeadlines(long authMs, long dialAckMs, long dialSetupMs) {
-            return new Options(authMs, dialAckMs, dialSetupMs, manualInboundConsumption);
+            return new Options(authMs, dialAckMs, dialSetupMs, hangupGraceMs, manualInboundConsumption);
+        }
+        public Options withHangupGrace(long graceMs) {
+            return new Options(authDeadlineMs, dialAckDeadlineMs, dialSetupDeadlineMs, graceMs, manualInboundConsumption);
         }
         public Options withManualInboundConsumption(boolean manual) {
-            return new Options(authDeadlineMs, dialAckDeadlineMs, dialSetupDeadlineMs, manual);
+            return new Options(authDeadlineMs, dialAckDeadlineMs, dialSetupDeadlineMs, hangupGraceMs, manual);
         }
     }
 
@@ -367,6 +374,8 @@ public final class RelaySessionMachine {
                 }
                 return List.copyOf(actions);
             }
+            case HANGUP_GRACE:
+                return List.of(transportFailed(RELAY_UNAVAILABLE, "clean disconnect grace " + options.hangupGraceMs() + " ms expired"));
             default:
                 return List.of();
         }
@@ -485,7 +494,8 @@ public final class RelaySessionMachine {
         }
         if (frame.kind() == FrameKind.HANGUP_REQUEST) {
             PayloadCodec.decode(frame.kind(), frame.payload());
-            state = State.HANGING_UP; pending.reset(); disarm();
+            state = State.HANGING_UP; pending.reset();
+            arm(Deadline.HANGUP_GRACE, nowMs + options.hangupGraceMs());
             return List.of(outbound(new HangupAck(), frame.requestId(), callId, sessionId));
         }
         if (frame.kind() == FrameKind.HANGUP_ACK) {
@@ -538,7 +548,7 @@ public final class RelaySessionMachine {
         hangupRequestId = request;
         state = State.HANGING_UP;
         pending.reset();
-        disarm();
+        arm(Deadline.HANGUP_GRACE, lastNowMs + options.hangupGraceMs());
         return outbound(new HangupRequest(reason), request, callId, sessionId);
     }
 
