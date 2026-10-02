@@ -16,13 +16,13 @@ class FakeController:
         self.remote_data = []
         self.remote_hangups = []
 
-    def on_dial_result(self, result):
+    def on_dial_result(self, result, reason=None):
         self.dial_results.append(result)
 
     def on_remote_data(self, data):
         self.remote_data.append(bytes(data))
 
-    def on_remote_hangup(self, reason="REMOTE_HANGUP"):
+    def on_remote_hangup(self, reason="REMOTE_HANGUP", detail=None):
         self.remote_hangups.append(reason)
 
 
