@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import io.circuitdrift.androidialup.protocol.*;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -155,11 +154,14 @@ class RelaySessionMachineTest {
         var m = (DataBytes) PayloadCodec.decode(((RelaySessionMachine.Outbound) first.get(0)).frame().kind(), ((RelaySessionMachine.Outbound) first.get(0)).frame().payload());
         assertArrayEquals(new byte[]{1,2,3}, m.data());
         assertEquals(2, machine.pendingOutboundBytes());
-        machine.onFrame(frame(FrameKind.FLOW_STATUS, new FlowStatus(10, 0), callId, sessionId, 0));
-        var drained = machine.drainPending();
+
+        // FLOW_STATUS replenishment immediately drains pending data, matching
+        // the Python reference sender and avoiding a second manual drain step.
+        var drained = machine.onFrame(frame(FrameKind.FLOW_STATUS, new FlowStatus(10, 0), callId, sessionId, 0));
         assertEquals(1, drained.size());
         var remainder = (DataBytes) PayloadCodec.decode(((RelaySessionMachine.Outbound) drained.get(0)).frame().kind(), ((RelaySessionMachine.Outbound) drained.get(0)).frame().payload());
         assertEquals(3, remainder.streamSeq());
         assertArrayEquals(new byte[]{4,5}, remainder.data());
+        assertEquals(0, machine.pendingOutboundBytes());
     }
 }
