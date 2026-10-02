@@ -219,6 +219,14 @@ public final class RelayTlsTransport implements AutoCloseable {
                 fail(reason);
                 return;
             }
+            if (closed) return;
+            // The session machine treats a host-initiated hangup as already known and emits no
+            // terminal action (it suppresses the echoing CALL_TERMINATED), so once HANGUP_REQUEST
+            // is in flight the transport reports the termination itself, then closes on the ack or
+            // after the hangup timeout.
+            if (machine.state() == RelaySessionMachine.State.HANGING_UP) {
+                listener.onCallTerminated(reason);
+            }
             owner.schedule(() -> fail(reason), config.hangupTimeoutMs(), TimeUnit.MILLISECONDS);
         });
     }
