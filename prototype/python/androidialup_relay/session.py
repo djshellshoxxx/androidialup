@@ -9,7 +9,6 @@ from androidialup_gateway.loopback import LoopbackBackend
 from androidialup_protocol.byte_relay import DEFAULT_RECEIVE_WINDOW, ByteRelayReceiver, ByteRelaySender, FlowControlBlocked
 from androidialup_protocol.frame import Frame, FrameKind, ProtocolError, ZERO_ID
 from androidialup_protocol.messages import (
-    AuthChallenge,
     AuthFail,
     AuthOk,
     AuthResponse,
@@ -32,6 +31,8 @@ from androidialup_protocol.messages import (
     kind_for_message,
 )
 
+from .auth import AUTH_FAILED_REASON, ChallengeResponseAuthenticator
+
 
 class RelaySessionState(str, Enum):
     NEW = "NEW"
@@ -50,16 +51,16 @@ class RelaySession:
         backend: LoopbackBackend | None = None,
         relay_id: str = "relay-prototype",
         gateway_id: str = "gw-loopback",
-        challenge_nonce: bytes = b"androidialup-test-nonce",
-        auth_validator: Callable[[bytes], bool] | None = None,
+        authenticator: ChallengeResponseAuthenticator | None = None,
         session_id_factory: Callable[[], bytes] | None = None,
     ) -> None:
         self.state = RelaySessionState.NEW
         self.backend = backend or LoopbackBackend()
         self.relay_id = relay_id
         self.gateway_id = gateway_id
-        self.challenge_nonce = bytes(challenge_nonce)
-        self.auth_validator = auth_validator or (lambda proof: proof == b"test-proof")
+        # Default authenticator has an empty credential store: nobody authenticates
+        # unless a store is explicitly provisioned.
+        self.authenticator = authenticator or ChallengeResponseAuthenticator()
         self.session_id_factory = session_id_factory or (lambda: secrets.token_bytes(16))
         self.endpoint_id: bytes | None = None
         self.call_id = ZERO_ID
@@ -120,10 +121,12 @@ class RelaySession:
             if frame.kind != FrameKind.AUTH_BEGIN:
                 raise ProtocolError("AUTH_BEGIN required after HELLO_ACK")
             decode_payload(frame.kind, frame.payload)
+            assert self.endpoint_id is not None
+            challenge = self.authenticator.begin(self.endpoint_id, self.relay_id)
             self.state = RelaySessionState.AUTH_CHALLENGE_SENT
             return [
                 self._frame(
-                    AuthChallenge(self.challenge_nonce, "device-credential"),
+                    challenge,
                     request_id=frame.request_id,
                     call_id=ZERO_ID,
                     session_id=ZERO_ID,
@@ -136,11 +139,11 @@ class RelaySession:
             response = decode_payload(frame.kind, frame.payload)
             if not isinstance(response, AuthResponse):
                 raise ProtocolError("invalid AUTH_RESPONSE")
-            if not self.auth_validator(response.proof):
+            if not self.authenticator.verify(response.proof):
                 self.state = RelaySessionState.FAILED
                 return [
                     self._frame(
-                        AuthFail("authentication failed"),
+                        AuthFail(AUTH_FAILED_REASON),
                         request_id=frame.request_id,
                         call_id=ZERO_ID,
                         session_id=ZERO_ID,

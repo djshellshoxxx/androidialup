@@ -6,16 +6,26 @@ import unittest
 from androidialup_modem.controller import ModemController, ModemState
 from androidialup_modem.relay_port import RelaySessionPort
 from androidialup_modem.tcp_dte import TcpDteServer
+from androidialup_relay.auth import InMemoryDeviceCredentialStore
 from androidialup_relay.server import RelayTcpServer
 from androidialup_relay.tls import create_client_ssl_context, create_server_ssl_context
 from tls_test_utils import generate_localhost_certificate
+
+
+ENDPOINT_ID = b"T" * 32
+DEVICE_SECRET = bytes.fromhex("5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e")
 
 
 class TcpDteRelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         cert, key = generate_localhost_certificate(self.tmp.name, prefix="terminal-e2e")
-        self.relay = RelayTcpServer("127.0.0.1", 0, create_server_ssl_context(cert, key))
+        self.relay = RelayTcpServer(
+            "127.0.0.1",
+            0,
+            create_server_ssl_context(cert, key),
+            credential_store=InMemoryDeviceCredentialStore({ENDPOINT_ID: DEVICE_SECRET}),
+        )
         await self.relay.start()
         relay_host, relay_port = self.relay.address
 
@@ -24,7 +34,8 @@ class TcpDteRelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
             relay_port,
             create_client_ssl_context(cert),
             server_hostname="localhost",
-            endpoint_id=b"T" * 32,
+            endpoint_id=ENDPOINT_ID,
+            device_secret=DEVICE_SECRET,
         )
         await self.session_port.start()
         self.controller = None
