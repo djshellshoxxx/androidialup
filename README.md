@@ -111,3 +111,52 @@ over a cellular voice call (see `docs/research/CELLULAR_VOICE_CODECS_R2.md`).
 - Pure-Java modules (`core-network`, `core-protocol`, `core-modem`, `core-session`)
   and the Android app are built and tested by the **Android Core Tests** GitHub
   Actions workflow.
+
+### Troubleshooting
+
+**Build: "Minimum supported Gradle version is …" or a plugin/AGP version error.**
+Use the bundled Gradle in Android Studio rather than a system Gradle. CI builds
+with Gradle 9.6 and the Android Gradle plugin pinned in `android/build.gradle`;
+a much older or newer command-line Gradle can mismatch. In Android Studio,
+**File → Sync Project with Gradle Files**.
+
+**Build: "Failed to find Android SDK" / "SDK location not found".**
+Open the `android` folder in Android Studio once so it writes
+`android/local.properties`, or set `ANDROID_HOME` to your SDK path. Install the
+**Android 36** SDK platform and build-tools via the SDK Manager.
+
+**Build: "Could not resolve com.android.application" or other downloads fail.**
+The first build fetches the Android plugin and dependencies from the internet.
+Check connectivity and any proxy; behind a firewall, configure Gradle's proxy
+in `~/.gradle/gradle.properties`.
+
+**Build: `JAVA_HOME`/Java version errors.**
+The modules target Java 17. Android Studio's bundled JDK works; for the command
+line, use a JDK 17+ and point `JAVA_HOME` at it.
+
+**Install: `adb: command not found`.**
+`adb` ships in the SDK platform-tools. Add `…/Android/sdk/platform-tools` to
+your `PATH`, or run it by full path.
+
+**Install: `adb` shows no device / "unauthorized".**
+Enable **Developer Options** (tap Build Number seven times in Settings → About)
+and **USB debugging**, replug the cable, and accept the "Allow USB debugging"
+prompt on the phone. `adb devices` should list it as `device`, not
+`unauthorized`.
+
+**Install: `INSTALL_FAILED_OLDER_SDK` or the app won't open.**
+The phone is older than Android 10 (API 29). That release is the minimum
+because the relay needs TLS 1.3.
+
+**Install: "App not installed" when tapping the APK.**
+Allow installing from the file manager/browser in
+**Settings → Apps → Special access → Install unknown apps**. If an older build
+is present with a different signature, uninstall it first.
+
+**Run: the app opens but dialing does nothing / "NO CARRIER".**
+Expected for now. There is no relay to dial yet; see *What the app does today*
+above. The network screen should still show your Wi-Fi/cellular selection.
+
+**Run: relay connection fails on Android 10–12.**
+Some core utilities were made safe for older Android, but if you hit a crash on
+API 26–32, prefer Android 13+ for now and please open an issue with the logcat.
