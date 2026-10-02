@@ -209,7 +209,7 @@ public final class AtLineParser {
                     i++;
                 }
             }
-            String target = text.substring(i).strip();
+            String target = text.substring(i).trim();
             if (target.isEmpty()) {
                 throw new AtParseException("D command requires a target");
             }
@@ -247,7 +247,7 @@ public final class AtLineParser {
                 return new AtCommand.Plus(name, AtCommand.Plus.Operation.QUERY, null);
             }
             if (op == '=') {
-                String value = text.substring(i + 1).strip();
+                String value = text.substring(i + 1).trim();
                 if (value.isEmpty()) {
                     throw new AtParseException("+" + name + " set requires a value");
                 }

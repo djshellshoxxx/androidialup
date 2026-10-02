@@ -234,7 +234,7 @@ public final class RelaySessionMachine {
         if (data == null || data.length == 0) return List.of();
         // S1_SPEC_FREEZE section 6: BYTE_RELAY queue overflow terminates the call, never drops bytes.
         if ((long) pending.size() + data.length > MAX_LOCAL_PENDING) return terminateCall(QUEUE_OVERFLOW);
-        pending.writeBytes(data);
+        pending.write(data, 0, data.length);
         return drainPending();
     }
 
@@ -247,7 +247,7 @@ public final class RelaySessionMachine {
             int take = (int)Math.min(Math.min((long)MAX_DATA_BYTES, peerWindow), all.length);
             byte[] chunk = Arrays.copyOfRange(all, 0, take);
             pending.reset();
-            if (take < all.length) pending.writeBytes(Arrays.copyOfRange(all, take, all.length));
+            if (take < all.length) pending.write(all, take, all.length - take);
             actions.add(outbound(new DataBytes(outboundSeq, chunk), 0, callId, sessionId));
             outboundSeq += take;
             peerWindow -= take;

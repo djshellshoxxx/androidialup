@@ -289,7 +289,7 @@ public final class ModemController implements SessionListener {
         for (byte b : data) {
             EscapeAction action = escape.feed(b & 0xFF, nowNanos, escapeChar, guardNanos);
             if (!action.held()) {
-                forward.writeBytes(action.forward());
+                { byte[] f = action.forward(); forward.write(f, 0, f.length); }
             }
         }
         if (forward.size() > 0) {

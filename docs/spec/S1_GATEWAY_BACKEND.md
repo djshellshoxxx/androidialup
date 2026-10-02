@@ -148,6 +148,25 @@ Normative constraints:
 - One PSTN target per call. The backend dials exactly the one number it is
   given; it performs no range dialing.
 
+SIP hosting compatibility. The backend SHALL interoperate with the common
+kinds of SIP/PSTN hosting rather than a single provider:
+
+- Registration trunks (SIP `REGISTER` with digest authentication) and
+  IP-authenticated trunks (no registration, allowed by source IP).
+- RFC 3261 signalling over UDP, TCP and TLS; media over RTP, with SRTP where
+  the provider offers it.
+- DTMF by RFC 4733 telephone-event (preferred) and SIP INFO as a fallback.
+- Provider-driven NAT traversal (Via `rport`/`received`, symmetric RTP) so the
+  gateway works behind NAT without per-provider hacks.
+- Codec negotiation that offers G.711 first and refuses a modem call that can
+  only negotiate a low-bitrate codec.
+
+Provider differences are expressed as a `SipProviderProfile` (registrar/proxy,
+transport, auth mode, DTMF mode, codec order, caller-ID and dial-string
+formatting) so a new host is added by configuration, not code. The backend
+SHALL ship with at least the loopback-equivalent test profile and be verified
+against more than one real provider before any interoperability claim.
+
 Reliability note: unlike a cellular voice call, a G.711 trunk is intended to be
 waveform-transparent, so modem passthrough/VBD is a recognised, workable path
 (`docs/research/GATEWAY_PBX_FINDINGS_R1.md`). Actual behaviour still depends on
