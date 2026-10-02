@@ -49,7 +49,7 @@ public record DestinationInput(String target, DialMethod method, long perCallTim
                 throw new IllegalArgumentException("target must not contain control characters");
             }
         }
-        if (!target.equals(target.strip())) {
+        if (!target.equals(target.trim())) {
             throw new IllegalArgumentException("target must not start or end with whitespace");
         }
         List<AtCommand> commands;

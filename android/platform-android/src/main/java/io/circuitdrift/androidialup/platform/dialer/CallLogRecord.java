@@ -1,5 +1,7 @@
 package io.circuitdrift.androidialup.platform.dialer;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
@@ -38,11 +40,16 @@ public record CallLogRecord(
     public CallLogRecord {
         Objects.requireNonNull(targetRedacted, "targetRedacted");
         Objects.requireNonNull(dialMethod, "dialMethod");
-        progress = List.copyOf(progress);
-        tones = List.copyOf(tones);
-        dtmfDetected = List.copyOf(dtmfDetected);
+        progress = immutable(progress);
+        tones = immutable(tones);
+        dtmfDetected = immutable(dtmfDetected);
         Objects.requireNonNull(outcome, "outcome");
         Objects.requireNonNull(internalReason, "internalReason");
+    }
+
+    /** Immutable copy without java.util.List.copyOf (API 31 on Android). */
+    static <T> List<T> immutable(List<T> source) {
+        return Collections.unmodifiableList(new ArrayList<>(source));
     }
 
     /** Display policy: all but the last four characters are replaced by {@code x}. */

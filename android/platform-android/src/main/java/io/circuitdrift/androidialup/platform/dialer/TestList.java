@@ -31,7 +31,7 @@ public final class TestList {
     private boolean attested;
 
     private TestList(List<DestinationInput> entries) {
-        this.entries = List.copyOf(entries);
+        this.entries = CallLogRecord.immutable(entries);
     }
 
     /**

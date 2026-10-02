@@ -8,6 +8,7 @@ import io.circuitdrift.androidialup.platform.relay.RelayModemSessionPort;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.RejectedExecutionException;
@@ -213,7 +214,7 @@ public final class DialerSession implements AutoCloseable {
             // CR or LF ends a line: result lines are CRLF-terminated and the echo of the first
             // init command (before ATE0 takes effect) ends with a bare CR.
             if (b == '\n' || b == '\r') {
-                String line = lineBuffer.toString(StandardCharsets.US_ASCII).strip();
+                String line = new String(lineBuffer.toByteArray(), StandardCharsets.US_ASCII).trim();
                 lineBuffer.reset();
                 if (!line.isEmpty()) onLine(line);
             } else {
@@ -230,7 +231,7 @@ public final class DialerSession implements AutoCloseable {
             return;
         }
         if (line.startsWith("+ADIAG: ")) {
-            if (call != null) call.internalReason = line.substring("+ADIAG: ".length()).strip();
+            if (call != null) call.internalReason = line.substring("+ADIAG: ".length()).trim();
             return;
         }
         CallLogRecord.Outcome outcome = outcomeOf(line);
@@ -243,7 +244,7 @@ public final class DialerSession implements AutoCloseable {
         if (outcome == CallLogRecord.Outcome.CONNECT) {
             if (call.outcome == null) call.outcome = outcome;
             if (line.length() > "CONNECT".length()) {
-                call.negotiated = new CallLogRecord.Negotiated(line.substring("CONNECT".length()).strip(), null);
+                call.negotiated = new CallLogRecord.Negotiated(line.substring("CONNECT".length()).trim(), null);
             }
         } else if (outcome != null) {
             // BUSY / NO DIALTONE / NO ANSWER / NO CARRIER / ERROR end the call.
@@ -273,7 +274,7 @@ public final class DialerSession implements AutoCloseable {
         String reason = done.internalReason != null ? done.internalReason
                 : controller.terminalReason().orElse(done.outcome.name());
         log.append(new CallLogRecord(done.startedAt, CallLogRecord.redact(done.input.target()),
-                done.input.method(), done.progress, List.of(), List.of(), done.negotiated, done.outcome,
+                done.input.method(), done.progress, Collections.emptyList(), Collections.emptyList(), done.negotiated, done.outcome,
                 reason, clockMs.getAsLong(), done.testListEntry));
     }
 

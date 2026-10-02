@@ -9,7 +9,7 @@ import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.List;
+import java.util.Collections;
 import java.util.Objects;
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SNIHostName;
@@ -107,7 +107,7 @@ public final class RelayTls {
             parameters.setProtocols(new String[] {TLS_1_3});
             parameters.setEndpointIdentificationAlgorithm("HTTPS");
             if (!isIpLiteral(host)) {
-                parameters.setServerNames(List.of(new SNIHostName(host)));
+                parameters.setServerNames(Collections.singletonList(new SNIHostName(host)));
             }
             ssl.setSSLParameters(parameters);
             ssl.setUseClientMode(true);

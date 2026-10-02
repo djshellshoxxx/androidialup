@@ -76,11 +76,11 @@ public final class CallLog {
     }
 
     public synchronized List<CallLogRecord> records() {
-        return List.copyOf(records);
+        return CallLogRecord.immutable(new ArrayList<>(records));
     }
 
     public synchronized List<HeaderEntry> header() {
-        return List.copyOf(header);
+        return CallLogRecord.immutable(header);
     }
 
     /** Newline-delimited JSON: header lines first, then one line per call record. */
