@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from contextlib import suppress
 
 from .controller import ModemController
 
@@ -13,10 +14,13 @@ class TcpDteServer:
         host: str,
         port: int,
         controller_factory: Callable[[Callable[[bytes], None]], ModemController],
+        *,
+        timer_tick_ms: int = 10,
     ) -> None:
         self.host = host
         self.port = port
         self.controller_factory = controller_factory
+        self.timer_tick_ms = max(1, int(timer_tick_ms))
         self._server: asyncio.AbstractServer | None = None
         self._clients: set[asyncio.Task] = set()
 
@@ -37,8 +41,18 @@ class TcpDteServer:
             await self._server.wait_closed()
             self._server = None
         tasks = list(self._clients)
+        for task in tasks:
+            task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _timer_loop(self, controller: ModemController, writer: asyncio.StreamWriter) -> None:
+        interval = self.timer_tick_ms / 1000.0
+        while not writer.is_closing():
+            await asyncio.sleep(interval)
+            now_ms = time.monotonic_ns() // 1_000_000
+            controller.on_timer(now_ms)
+            await writer.drain()
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
@@ -50,6 +64,7 @@ class TcpDteServer:
                 writer.write(bytes(data))
 
         controller = self.controller_factory(write_dte)
+        timer_task = asyncio.create_task(self._timer_loop(controller, writer))
         try:
             while True:
                 data = await reader.read(65536)
@@ -59,6 +74,9 @@ class TcpDteServer:
                 controller.feed_dte(data, now_ms)
                 await writer.drain()
         finally:
+            timer_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await timer_task
             controller.on_dte_disconnect()
             if not writer.is_closing():
                 writer.close()
