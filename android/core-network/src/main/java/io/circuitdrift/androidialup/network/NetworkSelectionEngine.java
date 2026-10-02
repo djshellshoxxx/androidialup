@@ -13,6 +13,7 @@ public final class NetworkSelectionEngine {
             String selectedId,
             boolean changed,
             boolean betterNetworkAvailable,
+            String betterNetworkId,
             String reason,
             Map<String, Double> scores
     ) {}
@@ -34,28 +35,16 @@ public final class NetworkSelectionEngine {
         if (candidate.relayProbeLoss() != null) {
             score -= 1000.0 * Math.max(0.0, Math.min(candidate.relayProbeLoss(), 0.5));
         }
-        if (candidate.metered()) {
-            score -= 25.0;
-        }
-        if (candidate.roaming()) {
-            score -= 50.0;
-        }
-        if (policy == NetworkPolicy.PREFER_WIFI && candidate.transport() == NetworkTransport.WIFI) {
-            score += 150.0;
-        }
-        if (policy == NetworkPolicy.PREFER_CELLULAR && candidate.transport() == NetworkTransport.CELLULAR) {
-            score += 150.0;
-        }
+        if (candidate.metered()) score -= 25.0;
+        if (candidate.roaming()) score -= 50.0;
+        if (policy == NetworkPolicy.PREFER_WIFI && candidate.transport() == NetworkTransport.WIFI) score += 150.0;
+        if (policy == NetworkPolicy.PREFER_CELLULAR && candidate.transport() == NetworkTransport.CELLULAR) score += 150.0;
         return score;
     }
 
     public boolean eligible(NetworkCandidate candidate, NetworkPolicy policy, boolean developerOverride) {
-        if (!candidate.internet()) {
-            return false;
-        }
-        if (!candidate.validated() && !developerOverride) {
-            return false;
-        }
+        if (!candidate.internet()) return false;
+        if (!candidate.validated() && !developerOverride) return false;
         return switch (policy) {
             case WIFI_ONLY -> candidate.transport() == NetworkTransport.WIFI;
             case CELLULAR_ONLY -> candidate.transport() == NetworkTransport.CELLULAR;
@@ -90,17 +79,19 @@ public final class NetworkSelectionEngine {
                 .orElse(null);
 
         if (best == null) {
-            return new SelectionDecision(null, selectedId != null, false, "NO_ELIGIBLE_NETWORK", Map.copyOf(scores));
+            return new SelectionDecision(null, selectedId != null, false, null,
+                    "NO_ELIGIBLE_NETWORK", Map.copyOf(scores));
         }
 
         if (!currentEligible) {
             boolean changed = !best.id().equals(selectedId);
-            return new SelectionDecision(best.id(), changed, false,
+            return new SelectionDecision(best.id(), changed, false, null,
                     selectedId == null ? "INITIAL_SELECTION" : "SELECTED_INELIGIBLE", Map.copyOf(scores));
         }
 
         if (best.id().equals(current.id())) {
-            return new SelectionDecision(current.id(), false, false, "CURRENT_BEST", Map.copyOf(scores));
+            return new SelectionDecision(current.id(), false, false, null,
+                    "CURRENT_BEST", Map.copyOf(scores));
         }
 
         double bestScore = scores.get(best.id());
@@ -108,33 +99,32 @@ public final class NetworkSelectionEngine {
         boolean genuinelyBetter = candidateComparator(policy, developerOverride).compare(best, current) < 0;
 
         if (activeCall) {
-            return new SelectionDecision(current.id(), false, genuinelyBetter, "ACTIVE_CALL_NO_MIGRATION", Map.copyOf(scores));
+            return new SelectionDecision(current.id(), false, genuinelyBetter,
+                    genuinelyBetter ? best.id() : null,
+                    "ACTIVE_CALL_NO_MIGRATION", Map.copyOf(scores));
         }
 
         if (bestScore >= currentScore + HANDOVER_MARGIN) {
-            return new SelectionDecision(best.id(), true, false, "HANDOVER_MARGIN_MET", Map.copyOf(scores));
+            return new SelectionDecision(best.id(), true, false, null,
+                    "HANDOVER_MARGIN_MET", Map.copyOf(scores));
         }
-        return new SelectionDecision(current.id(), false, genuinelyBetter, "HYSTERESIS_HOLD", Map.copyOf(scores));
+        return new SelectionDecision(current.id(), false, genuinelyBetter,
+                genuinelyBetter ? best.id() : null,
+                "HYSTERESIS_HOLD", Map.copyOf(scores));
     }
 
     private Comparator<NetworkCandidate> candidateComparator(NetworkPolicy policy, boolean developerOverride) {
         return (a, b) -> {
             int scoreCompare = Double.compare(score(b, policy, developerOverride), score(a, policy, developerOverride));
-            if (scoreCompare != 0) {
-                return scoreCompare;
-            }
+            if (scoreCompare != 0) return scoreCompare;
 
             double aRtt = a.relayProbeRttMs() == null ? Double.POSITIVE_INFINITY : a.relayProbeRttMs();
             double bRtt = b.relayProbeRttMs() == null ? Double.POSITIVE_INFINITY : b.relayProbeRttMs();
             int rttCompare = Double.compare(aRtt, bRtt);
-            if (rttCompare != 0) {
-                return rttCompare;
-            }
+            if (rttCompare != 0) return rttCompare;
 
             int transportCompare = Integer.compare(transportRank(a.transport()), transportRank(b.transport()));
-            if (transportCompare != 0) {
-                return transportCompare;
-            }
+            if (transportCompare != 0) return transportCompare;
             return a.id().compareTo(b.id());
         };
     }
