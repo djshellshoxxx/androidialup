@@ -10,7 +10,6 @@ from androidialup_protocol.frame import Frame, ZERO_ID
 from androidialup_protocol.messages import (
     AuthBegin,
     AuthResponse,
-    CallProgress,
     CallTerminated,
     DataBytes,
     DialAccepted,
@@ -64,7 +63,12 @@ class TlsEndToEndLoopbackTests(unittest.IsolatedAsyncioTestCase):
         reader, writer = await asyncio.open_connection(host, port, ssl=context, server_hostname="localhost")
         return AsyncFramedConnection(reader, writer), writer
 
-    async def establish_call(self, connection):
+    async def test_tls13_one_megabyte_binary_transfer_heartbeat_and_hangup(self):
+        connection, writer = await self.open_connection()
+        ssl_object = writer.get_extra_info("ssl_object")
+        self.assertIsNotNone(ssl_object)
+        self.assertEqual(ssl_object.version(), "TLSv1.3")
+
         await connection.send_frame(frame_for(Hello("AndroidDialup", "0.1", 1, 1, ENDPOINT_ID, ("BYTE_RELAY",)), request_id=1))
         await connection.recv_frame()
         await connection.send_frame(frame_for(AuthBegin(), request_id=2))
@@ -78,43 +82,16 @@ class TlsEndToEndLoopbackTests(unittest.IsolatedAsyncioTestCase):
                 request_id=4,
             )
         )
-        accepted = decode_payload((await connection.recv_frame()).kind, (awaitable := None) or b"") if False else None
-        first = await connection.recv_frame() if False else None
-        # Read DIAL_ACCEPTED, DIALING, CONNECTED, initial FLOW_STATUS in order.
         accepted_frame = await connection.recv_frame()
         accepted = decode_payload(accepted_frame.kind, accepted_frame.payload)
         self.assertIsInstance(accepted, DialAccepted)
         session_id = accepted.assigned_session_id
-        dialing = decode_payload((await connection.recv_frame()).kind, b"") if False else None
-        progress_1_frame = await connection.recv_frame()
-        progress_1 = decode_payload(progress_1_frame.kind, progress_1_frame.payload)
-        progress_2_frame = await connection.recv_frame()
-        progress_2 = decode_payload(progress_2_frame.kind, progress_2_frame.payload)
-        flow_frame = await connection.recv_frame()
-        flow = decode_payload(flow_frame.kind, flow_frame.payload)
-        self.assertEqual([progress_1.phase, progress_2.phase], [ProgressPhase.DIALING, ProgressPhase.CONNECTED])
-        self.assertIsInstance(flow, FlowStatus)
-        return session_id
-
-    async def test_tls13_one_megabyte_binary_transfer_heartbeat_and_hangup(self):
-        connection, writer = await self.open_connection()
-        ssl_object = writer.get_extra_info("ssl_object")
-        self.assertIsNotNone(ssl_object)
-        self.assertEqual(ssl_object.version(), "TLSv1.3")
-
-        # Handshake manually here to keep frame ordering explicit.
-        await connection.send_frame(frame_for(Hello("AndroidDialup", "0.1", 1, 1, ENDPOINT_ID, ("BYTE_RELAY",)), request_id=1))
-        await connection.recv_frame()
-        await connection.send_frame(frame_for(AuthBegin(), request_id=2)); await connection.recv_frame()
-        await connection.send_frame(frame_for(AuthResponse(b"test-proof"), request_id=3)); await connection.recv_frame()
-        await connection.send_frame(frame_for(DialRequest("loopback", Mode.BYTE_RELAY, NetworkTransport.WIFI, ("BYTE_RELAY",), 60000), call_id=CALL_ID, request_id=4))
-        accepted_frame = await connection.recv_frame()
-        accepted = decode_payload(accepted_frame.kind, accepted_frame.payload)
-        self.assertIsInstance(accepted, DialAccepted)
-        session_id = accepted.assigned_session_id
-        p1f = await connection.recv_frame(); p1 = decode_payload(p1f.kind, p1f.payload)
-        p2f = await connection.recv_frame(); p2 = decode_payload(p2f.kind, p2f.payload)
-        flowf = await connection.recv_frame(); flow = decode_payload(flowf.kind, flowf.payload)
+        p1f = await connection.recv_frame()
+        p1 = decode_payload(p1f.kind, p1f.payload)
+        p2f = await connection.recv_frame()
+        p2 = decode_payload(p2f.kind, p2f.payload)
+        flowf = await connection.recv_frame()
+        flow = decode_payload(flowf.kind, flowf.payload)
         self.assertEqual([p1.phase, p2.phase], [ProgressPhase.DIALING, ProgressPhase.CONNECTED])
         self.assertIsInstance(flow, FlowStatus)
 
@@ -125,7 +102,9 @@ class TlsEndToEndLoopbackTests(unittest.IsolatedAsyncioTestCase):
         offset = 0
         while offset < len(source):
             chunk = source[offset : offset + 32768]
-            await connection.send_frame(frame_for(DataBytes(offset, chunk), call_id=CALL_ID, session_id=session_id, request_id=0))
+            await connection.send_frame(
+                frame_for(DataBytes(offset, chunk), call_id=CALL_ID, session_id=session_id, request_id=0)
+            )
             found_data = None
             for _ in range(2):
                 response = await connection.recv_frame()
@@ -134,16 +113,22 @@ class TlsEndToEndLoopbackTests(unittest.IsolatedAsyncioTestCase):
                     found_data = message
             self.assertIsNotNone(found_data)
             echoed.extend(receiver.accept(found_data))
-            await connection.send_frame(frame_for(FlowStatus(256 * 1024, 0), call_id=CALL_ID, session_id=session_id, request_id=0))
+            await connection.send_frame(
+                frame_for(FlowStatus(256 * 1024, 0), call_id=CALL_ID, session_id=session_id, request_id=0)
+            )
             offset += len(chunk)
 
         self.assertEqual(bytes(echoed), source)
 
-        await connection.send_frame(frame_for(Ping(987654321, 123), call_id=CALL_ID, session_id=session_id, request_id=99))
+        await connection.send_frame(
+            frame_for(Ping(987654321, 123), call_id=CALL_ID, session_id=session_id, request_id=99)
+        )
         pong_frame = await connection.recv_frame()
         self.assertEqual(decode_payload(pong_frame.kind, pong_frame.payload), Pong(987654321))
 
-        await connection.send_frame(frame_for(HangupRequest("user"), call_id=CALL_ID, session_id=session_id, request_id=100))
+        await connection.send_frame(
+            frame_for(HangupRequest("user"), call_id=CALL_ID, session_id=session_id, request_id=100)
+        )
         end_messages = []
         for _ in range(2):
             end_frame = await connection.recv_frame()
