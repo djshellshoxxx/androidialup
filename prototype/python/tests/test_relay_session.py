@@ -1,7 +1,7 @@
 import unittest
 
 from androidialup_gateway.loopback import LoopbackBackend
-from androidialup_protocol.frame import Frame, FrameKind, ProtocolError, ZERO_ID
+from androidialup_protocol.frame import Frame, ProtocolError, ZERO_ID
 from androidialup_protocol.messages import (
     AuthBegin, AuthChallenge, AuthOk, AuthResponse, CallProgress, CallTerminated,
     DataBytes, DialAccepted, DialRequest, FlowStatus, HangupAck, HangupRequest,
@@ -82,14 +82,17 @@ class RelaySessionTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "gap"):
             session.handle_frame(make_frame(DataBytes(1, b"x"), call_id=CALL_ID, session_id=SESSION_ID))
 
-    def test_flow_status_can_close_and_reopen_echo_window(self):
+    def test_flow_status_can_close_and_reopen_echo_window_without_losing_bytes(self):
         session = authenticated_session(); dial_loopback(session)
         session.handle_frame(make_frame(FlowStatus(0, 1), call_id=CALL_ID, session_id=SESSION_ID))
-        with self.assertRaisesRegex(ProtocolError, "flow window"):
-            session.handle_frame(make_frame(DataBytes(0, b"x"), call_id=CALL_ID, session_id=SESSION_ID))
-        session.handle_frame(make_frame(FlowStatus(10, 0), call_id=CALL_ID, session_id=SESSION_ID))
+        blocked = session.handle_frame(make_frame(DataBytes(0, b"x"), call_id=CALL_ID, session_id=SESSION_ID))
+        self.assertFalse(any(isinstance(decode_payload(f.kind, f.payload), DataBytes) for f in blocked))
+        reopened = session.handle_frame(make_frame(FlowStatus(10, 0), call_id=CALL_ID, session_id=SESSION_ID))
+        echoed = [decode_payload(f.kind, f.payload) for f in reopened]
+        self.assertEqual([m for m in echoed if isinstance(m, DataBytes)], [DataBytes(0, b"x")])
         frames = session.handle_frame(make_frame(DataBytes(1, b"y"), call_id=CALL_ID, session_id=SESSION_ID))
-        self.assertTrue(any(isinstance(decode_payload(f.kind, f.payload), DataBytes) for f in frames))
+        echoed2 = [decode_payload(f.kind, f.payload) for f in frames]
+        self.assertEqual([m for m in echoed2 if isinstance(m, DataBytes)], [DataBytes(1, b"y")])
 
     def test_ping_gets_pong(self):
         session = authenticated_session()
@@ -111,7 +114,7 @@ class RelaySessionTests(unittest.TestCase):
         session.handle_frame(make_frame(Hello("AndroidDialup", "0.1", 1, 1, ENDPOINT_ID, ())))
         session.handle_frame(make_frame(AuthBegin(), request_id=2))
         session.handle_frame(make_frame(AuthResponse(b"test-proof"), request_id=3))
-        request, first = dial_loopback(session)
+        request, _ = dial_loopback(session)
         duplicate = session.handle_frame(make_frame(request, call_id=CALL_ID, session_id=ZERO_ID, request_id=4))
         self.assertEqual(len(duplicate), 1)
         self.assertIsInstance(decode_payload(duplicate[0].kind, duplicate[0].payload), DialAccepted)
