@@ -13,6 +13,8 @@ import java.util.function.Supplier;
 public final class RelaySessionMachine {
     public static final int DEFAULT_RECEIVE_WINDOW = 256 * 1024;
     public static final int MAX_LOCAL_PENDING = 256 * 1024;
+    /** S1_SPEC_FREEZE control heartbeat failure interval: no PONG within this window fails the transport. */
+    public static final long HEARTBEAT_FAILURE_MS = 30_000;
 
     public enum State {
         NEW, HELLO_SENT, AUTH_BEGIN_SENT, AUTH_RESPONSE_SENT,
@@ -21,7 +23,7 @@ public final class RelaySessionMachine {
 
     public interface AuthProofProvider { byte[] proofFor(AuthChallenge challenge); }
 
-    public sealed interface Action permits Outbound, CallConnected, InboundData, CallFailed, CallTerminatedAction {}
+    public sealed interface Action permits Outbound, CallConnected, InboundData, CallFailed, CallTerminatedAction, TransportFailed {}
     public record Outbound(AduFrame frame) implements Action {}
     public record CallConnected(String detail) implements Action {}
     public static final class InboundData implements Action {
@@ -31,6 +33,8 @@ public final class RelaySessionMachine {
     }
     public record CallFailed(DialFailure reason, String detail) implements Action {}
     public record CallTerminatedAction(String reason) implements Action {}
+    /** Emitted once when the transport must be closed; an active call maps to NO CARRIER. */
+    public record TransportFailed(String reason) implements Action {}
 
     private final byte[] endpointId;
     private final AuthProofProvider proofProvider;
@@ -46,6 +50,13 @@ public final class RelaySessionMachine {
     private long peerWindow = DEFAULT_RECEIVE_WINDOW;
     private final ByteArrayOutputStream pending = new ByteArrayOutputStream();
 
+    private long heartbeatIntervalMs;
+    private long lastPeerActivityMs;
+    private boolean pingOutstanding;
+    private long outstandingPingNonce;
+    private long pingSentAtMs;
+    private long nextPingNonce = 1;
+
     public RelaySessionMachine(byte[] endpointId, AuthProofProvider proofProvider, Supplier<byte[]> callIdFactory) {
         if (endpointId == null || endpointId.length != 32) throw new IllegalArgumentException("endpointId must be 32 bytes");
         this.endpointId = endpointId.clone();
@@ -60,9 +71,16 @@ public final class RelaySessionMachine {
     public long outboundSeq(){return outboundSeq;}
     public long inboundSeq(){return inboundSeq;}
     public long peerWindow(){return peerWindow;}
+    public boolean heartbeatOutstanding(){return pingOutstanding;}
+    public long lastPeerActivityMs(){return lastPeerActivityMs;}
+    public long heartbeatIntervalMs(){return heartbeatIntervalMs;}
 
-    public List<Action> onTlsConnected() {
+    /** Convenience overload for callers that do not drive heartbeat timing. */
+    public List<Action> onTlsConnected() { return onTlsConnected(lastPeerActivityMs); }
+
+    public List<Action> onTlsConnected(long nowMs) {
         requireState(State.NEW, "TLS connected");
+        lastPeerActivityMs = nowMs;
         long request = takeRequestId();
         expectedRequestId = request;
         state = State.HELLO_SENT;
@@ -111,12 +129,60 @@ public final class RelaySessionMachine {
         return List.of(outbound(new HangupRequest(reason), request, callId, sessionId));
     }
 
-    public List<Action> onFrame(AduFrame frame) {
+    /** Convenience overload for callers that do not drive heartbeat timing. */
+    public List<Action> onFrame(AduFrame frame) { return onFrame(frame, lastPeerActivityMs); }
+
+    /**
+     * Handles one inbound frame received at monotonic time {@code nowMs}. Every accepted
+     * frame refreshes peer activity. Heartbeat frames are handled in any post-HELLO state.
+     */
+    public List<Action> onFrame(AduFrame frame, long nowMs) {
         Objects.requireNonNull(frame, "frame");
+        if (state == State.FAILED) throw new ProtocolException("session is failed");
         if (frame.kind() == FrameKind.PING && state != State.NEW) {
             Ping ping = (Ping)PayloadCodec.decode(frame.kind(), frame.payload());
+            lastPeerActivityMs = nowMs;
             return List.of(outbound(new Pong(ping.nonce()), frame.requestId(), frame.callId(), frame.sessionId()));
         }
+        if (frame.kind() == FrameKind.PONG && state != State.NEW) {
+            Pong pong = (Pong)PayloadCodec.decode(frame.kind(), frame.payload());
+            if (!pingOutstanding) throw new ProtocolException("unsolicited PONG");
+            if (pong.nonce() != outstandingPingNonce) throw new ProtocolException("PONG nonce does not match outstanding PING");
+            pingOutstanding = false;
+            lastPeerActivityMs = nowMs;
+            return List.of();
+        }
+        List<Action> actions = dispatch(frame);
+        lastPeerActivityMs = nowMs;
+        return actions;
+    }
+
+    /**
+     * Services heartbeat timing at monotonic time {@code nowMs}. Never sleeps. Sends a PING once
+     * the negotiated interval elapses without peer activity, and emits exactly one
+     * {@link TransportFailed} when that PING goes unanswered for {@link #HEARTBEAT_FAILURE_MS}.
+     */
+    public List<Action> onTimer(long nowMs) {
+        if (!authenticated() || heartbeatIntervalMs <= 0) return List.of();
+        if (pingOutstanding) {
+            if (nowMs - pingSentAtMs < HEARTBEAT_FAILURE_MS) return List.of();
+            state = State.FAILED;
+            pingOutstanding = false;
+            return List.of(new TransportFailed("HEARTBEAT_TIMEOUT"));
+        }
+        if (nowMs - lastPeerActivityMs < heartbeatIntervalMs) return List.of();
+        long nonce = nextPingNonce++;
+        pingOutstanding = true;
+        outstandingPingNonce = nonce;
+        pingSentAtMs = nowMs;
+        return List.of(outbound(new Ping(nonce, nowMs), 0, AduFrame.ZERO_ID, AduFrame.ZERO_ID));
+    }
+
+    private boolean authenticated() {
+        return state == State.IDLE || state == State.DIALING || state == State.CONNECTED || state == State.HANGING_UP;
+    }
+
+    private List<Action> dispatch(AduFrame frame) {
 
         return switch (state) {
             case NEW -> throw new ProtocolException("TLS connection/HELLO required before inbound frames");
@@ -133,6 +199,7 @@ public final class RelaySessionMachine {
         requireKind(frame, FrameKind.HELLO_ACK); requireZeroIds(frame); requireExpectedRequest(frame);
         HelloAck ack = (HelloAck)PayloadCodec.decode(frame.kind(), frame.payload());
         if (ack.selectedVersion() != 1) throw new ProtocolException("relay selected unsupported protocol version");
+        heartbeatIntervalMs = ack.heartbeatSeconds() * 1000L;
         long request = takeRequestId(); expectedRequestId = request; state = State.AUTH_BEGIN_SENT;
         return List.of(outbound(new AuthBegin(), request, AduFrame.ZERO_ID, AduFrame.ZERO_ID));
     }

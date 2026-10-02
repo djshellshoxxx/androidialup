@@ -41,7 +41,7 @@ that PR merges:
    `S1_SPEC_FREEZE.md`, `S1_TEST_PLAN.md`, and Phase X1 of
    `docs/PROJECT_PLAN.md`.
 
-Owned by Codex (Claude will not touch): `android/core-session/**` and
+Formerly owned by Codex, now taken over by Claude: `android/core-session/**` and
 `android/core-protocol/src/main/**`.
 
 Also owned by Claude's branch: `.gitignore`, `android/settings.gradle`,

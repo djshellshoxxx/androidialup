@@ -88,4 +88,31 @@ class RelaySessionHeartbeatTest {
         assertThrows(ProtocolException.class, () -> machine.onFrame(
                 frame(FrameKind.PONG, new Pong(ping.nonce() + 1), 0), 10010));
     }
+
+    @Test
+    void unsolicitedPongIsProtocolViolation() {
+        authenticateAt(0, 10);
+        assertThrows(ProtocolException.class, () -> machine.onFrame(frame(FrameKind.PONG, new Pong(1), 0), 100));
+    }
+
+    @Test
+    void zeroHeartbeatIntervalDisablesPings() {
+        authenticateAt(0, 0);
+        assertTrue(machine.onTimer(1_000_000).isEmpty());
+        assertFalse(machine.heartbeatOutstanding());
+    }
+
+    @Test
+    void noPingBeforeAuthentication() {
+        machine.onTlsConnected(0);
+        assertTrue(machine.onTimer(60_000).isEmpty());
+    }
+
+    @Test
+    void inboundTrafficDefersNextPing() {
+        authenticateAt(0, 10);
+        machine.onFrame(frame(FrameKind.PING, new Ping(5, 0), 0), 8000);
+        assertTrue(machine.onTimer(17999).isEmpty());
+        assertEquals(FrameKind.PING, oneOutbound(machine.onTimer(18000)).frame().kind());
+    }
 }
