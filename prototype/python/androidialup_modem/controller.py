@@ -47,6 +47,7 @@ class ModemController:
         write_dte: Callable[[bytes], None],
         *,
         build_id: str = "dev",
+        snapshot_listener: Callable[[ModemSnapshot], None] | None = None,
     ) -> None:
         self.session_port = session_port
         self.write_dte = write_dte
@@ -56,9 +57,13 @@ class ModemController:
         self.state = ModemState.COMMAND
         self.signals = DteSignals()
         self.terminal_reason: str | None = None
+        #: Optional structured detail for terminal_reason (S1_SPEC_FREEZE section 12).
+        self.terminal_detail: str | None = None
+        self.snapshot_listener = snapshot_listener
         self._line = bytearray()
         self._discard_line = False
         self._dial_terminal_emitted = False
+        self._published = self.snapshot
 
     @property
     def snapshot(self) -> ModemSnapshot:
@@ -71,6 +76,21 @@ class ModemController:
             cts=self.signals.cts,
             ri=self.signals.ri,
         )
+
+    def _publish(self) -> None:
+        """Publish an immutable snapshot to observers when state or signals changed."""
+        snapshot = self.snapshot
+        previous = self._published
+        if previous is not None and previous.state == snapshot.state and previous.signals == snapshot.signals:
+            return
+        self._published = snapshot
+        if self.snapshot_listener is not None:
+            self.snapshot_listener(snapshot)
+
+    def _transition(self, state: ModemState, dcd: bool) -> None:
+        self.state = state
+        self._set_dcd(dcd)
+        self._publish()
 
     def _emit_line(self, text: str) -> None:
         cr = self.engine.profile.s_registers[3]
@@ -145,21 +165,20 @@ class ModemController:
 
         for effect in execution.effects:
             if effect.type == AtEffectType.DIAL:
-                self.state = ModemState.DIALING
                 self.terminal_reason = None
+                self.terminal_detail = None
                 self._dial_terminal_emitted = False
-                self._set_dcd(False)
+                self._transition(ModemState.DIALING, False)
                 self.session_port.dial(effect.value or "")
             elif effect.type == AtEffectType.HANGUP:
                 if self.state in {ModemState.DIALING, ModemState.ONLINE_DATA, ModemState.ONLINE_COMMAND}:
                     self.session_port.hangup("LOCAL_HANGUP")
-                self.state = ModemState.COMMAND
-                self._set_dcd(False)
+                self._transition(ModemState.COMMAND, False)
             elif effect.type == AtEffectType.ANSWER:
                 self.session_port.answer()
             elif effect.type == AtEffectType.RESUME_ONLINE:
                 if self.signals.dcd:
-                    self.state = ModemState.ONLINE_DATA
+                    self._transition(ModemState.ONLINE_DATA, True)
 
     def _feed_online(self, data: bytes, now_ms: int) -> None:
         escape_char = self.engine.profile.s_registers[2]
@@ -182,38 +201,38 @@ class ModemController:
         if action.forward:
             self.session_port.write_data(action.forward)
         if action.escaped:
-            self.state = ModemState.ONLINE_COMMAND
+            self._transition(ModemState.ONLINE_COMMAND, self.signals.dcd)
             self._emit_result(ResultCode.OK)
 
-    def on_dial_result(self, result: ResultCode) -> None:
+    def on_dial_result(self, result: ResultCode, reason: str | None = None) -> None:
         if self.state != ModemState.DIALING or self._dial_terminal_emitted:
             return
         if result == ResultCode.CONNECT:
-            self.state = ModemState.ONLINE_DATA
-            self._set_dcd(True)
+            self._transition(ModemState.ONLINE_DATA, True)
             self._dial_terminal_emitted = True
             self._emit_result(ResultCode.CONNECT)
             return
 
         if result not in {ResultCode.BUSY, ResultCode.NO_DIALTONE, ResultCode.NO_ANSWER, ResultCode.NO_CARRIER}:
             result = ResultCode.NO_CARRIER
-        self.state = ModemState.COMMAND
-        self._set_dcd(False)
         self._dial_terminal_emitted = True
-        self.terminal_reason = result.name
+        self.terminal_reason = reason or result.name
+        self.terminal_detail = None
+        self._transition(ModemState.COMMAND, False)
         self._emit_result(result)
 
     def on_remote_data(self, data: bytes) -> None:
         if self.state == ModemState.ONLINE_DATA and self.signals.dcd:
             self.write_dte(bytes(data))
 
-    def on_remote_hangup(self, reason: str = "REMOTE_HANGUP") -> None:
+    def on_remote_hangup(self, reason: str = "REMOTE_HANGUP", detail: str | None = None) -> None:
+        """Remote/transport termination: DCD drops, then exactly one NO CARRIER."""
         if self.state not in {ModemState.DIALING, ModemState.ONLINE_DATA, ModemState.ONLINE_COMMAND}:
             return
         was_dialing = self.state == ModemState.DIALING
-        self.state = ModemState.COMMAND
-        self._set_dcd(False)
         self.terminal_reason = reason
+        self.terminal_detail = detail
+        self._transition(ModemState.COMMAND, False)
         if was_dialing:
             if not self._dial_terminal_emitted:
                 self._dial_terminal_emitted = True
@@ -224,7 +243,6 @@ class ModemController:
     def on_dte_disconnect(self) -> None:
         if self.state in {ModemState.DIALING, ModemState.ONLINE_DATA, ModemState.ONLINE_COMMAND}:
             self.session_port.hangup("DTE_DISCONNECTED")
-        self.state = ModemState.COMMAND
-        self._set_dcd(False)
+        self._transition(ModemState.COMMAND, False)
         self._line.clear()
         self._discard_line = False
