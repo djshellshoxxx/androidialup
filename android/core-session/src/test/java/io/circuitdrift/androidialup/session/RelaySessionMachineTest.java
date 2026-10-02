@@ -19,7 +19,7 @@ class RelaySessionMachineTest {
         endpoint = new byte[32];
         callId = new byte[16]; java.util.Arrays.fill(callId, (byte) 0x43);
         sessionId = new byte[16]; java.util.Arrays.fill(sessionId, (byte) 0x53);
-        machine = new RelaySessionMachine(endpoint, challenge -> new byte[]{0x01,0x02}, () -> callId.clone());
+        machine = new RelaySessionMachine(endpoint, (relayId, endpointId, challenge) -> new byte[]{0x01,0x02}, () -> callId.clone());
     }
 
     private RelaySessionMachine.Outbound onlyOutbound(List<RelaySessionMachine.Action> actions) {

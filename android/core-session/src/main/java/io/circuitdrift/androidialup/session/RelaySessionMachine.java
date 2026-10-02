@@ -21,7 +21,13 @@ public final class RelaySessionMachine {
         IDLE, DIALING, CONNECTED, HANGING_UP, FAILED
     }
 
-    public interface AuthProofProvider { byte[] proofFor(AuthChallenge challenge); }
+    /**
+     * Computes {@code AUTH_RESPONSE.proof}. {@code relayId} is the value from HELLO_ACK and
+     * {@code endpointId} the 32 bytes sent in HELLO. Throwing {@link ProtocolException} rejects
+     * the challenge and no AUTH_RESPONSE is sent.
+     */
+    @FunctionalInterface
+    public interface AuthProofProvider { byte[] proofFor(String relayId, byte[] endpointId, AuthChallenge challenge); }
 
     public sealed interface Action permits Outbound, CallConnected, InboundData, CallFailed, CallTerminatedAction, TransportFailed {}
     public record Outbound(AduFrame frame) implements Action {}
@@ -41,6 +47,7 @@ public final class RelaySessionMachine {
     private final Supplier<byte[]> callIdFactory;
 
     private State state = State.NEW;
+    private String relayId;
     private byte[] callId = AduFrame.ZERO_ID.clone();
     private byte[] sessionId = AduFrame.ZERO_ID.clone();
     private long nextRequestId = 1;
@@ -65,6 +72,8 @@ public final class RelaySessionMachine {
     }
 
     public State state(){return state;}
+    /** relay_id from HELLO_ACK, or null before it arrived. */
+    public String relayId(){return relayId;}
     public byte[] callId(){return callId.clone();}
     public byte[] sessionId(){return sessionId.clone();}
     public int pendingOutboundBytes(){return pending.size();}
@@ -200,6 +209,7 @@ public final class RelaySessionMachine {
         HelloAck ack = (HelloAck)PayloadCodec.decode(frame.kind(), frame.payload());
         if (ack.selectedVersion() != 1) throw new ProtocolException("relay selected unsupported protocol version");
         heartbeatIntervalMs = ack.heartbeatSeconds() * 1000L;
+        relayId = ack.relayId();
         long request = takeRequestId(); expectedRequestId = request; state = State.AUTH_BEGIN_SENT;
         return List.of(outbound(new AuthBegin(), request, AduFrame.ZERO_ID, AduFrame.ZERO_ID));
     }
@@ -207,7 +217,7 @@ public final class RelaySessionMachine {
     private List<Action> onAuthChallenge(AduFrame frame) {
         requireKind(frame, FrameKind.AUTH_CHALLENGE); requireZeroIds(frame); requireExpectedRequest(frame);
         AuthChallenge challenge = (AuthChallenge)PayloadCodec.decode(frame.kind(), frame.payload());
-        byte[] proof = proofProvider.proofFor(challenge);
+        byte[] proof = proofProvider.proofFor(relayId, endpointId.clone(), challenge);
         if (proof == null) throw new IllegalStateException("proofProvider returned null");
         long request = takeRequestId(); expectedRequestId = request; state = State.AUTH_RESPONSE_SENT;
         return List.of(outbound(new AuthResponse(proof), request, AduFrame.ZERO_ID, AduFrame.ZERO_ID));

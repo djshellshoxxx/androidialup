@@ -16,7 +16,7 @@ class RelaySessionHeartbeatTest {
     void setUp() {
         byte[] call = new byte[16];
         call[0] = 1;
-        machine = new RelaySessionMachine(endpoint, challenge -> new byte[]{1}, () -> call.clone());
+        machine = new RelaySessionMachine(endpoint, (relayId, endpointId, challenge) -> new byte[]{1}, () -> call.clone());
     }
 
     private AduFrame frame(FrameKind kind, Message message, long requestId) {
