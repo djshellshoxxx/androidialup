@@ -29,6 +29,8 @@ class ModemControllerTests(unittest.TestCase):
         self.port = FakeSessionPort()
         self.out = []
         self.controller = ModemController(self.port, self.out.append)
+        # Echo behavior is covered at the AT/profile layer; reducer tests focus on state/results.
+        self.controller.engine.profile.echo = False
 
     def test_at_dial_connect_and_binary_data(self):
         self.controller.feed_dte(b"AT\r", 0)
