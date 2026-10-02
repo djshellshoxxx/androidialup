@@ -10,3 +10,6 @@ android/local.properties
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Claude Code agent worktrees
+.claude/worktrees/
