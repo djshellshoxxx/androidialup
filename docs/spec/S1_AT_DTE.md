@@ -114,6 +114,48 @@ On accepted `ATD`:
 
 `ATH` during DIALING cancels the dial, waits for cleanup up to the disconnect grace period, emits `OK`, and returns to COMMAND.
 
+## 7a. DTMF dialing and sending
+
+The dial target MAY contain DTMF-dialable characters `0-9`, `A-D`, `*`, `#`,
+and the pause character `,` (comma), whose dwell is `S8` seconds per comma.
+These are passed to the gateway, which generates the tones into the call audio
+path where the backend supports it (`S1_GATEWAY_BACKEND.md`). Over BYTE_RELAY
+the digits are forwarded as dial-target characters only; no audio is produced.
+
+To send DTMF during an established call:
+
+```text
+AT+DTMF=<digits>     // digits from 0-9 A-D * # , with optional per-digit timing
+```
+
+`AT+DTMF` is valid only in ONLINE_COMMAND or COMMAND with an active call; it
+returns `OK` once the gateway accepts the sequence, or `ERROR` if the backend
+cannot generate DTMF. Default tone/gap timing is `S11` milliseconds (default
+`S11=95`). It never alters modem state.
+
+## 7b. Call-progress and tone reporting
+
+Beyond the terminal result code, when extended diagnostics are enabled
+(`AT+DIAG=1`) the modem MAY emit informational call-progress lines before the
+terminal result, one per detected event, without replacing the base result:
+
+```text
++ACPROG: DIAL_TONE
++ACPROG: RINGBACK
++ACPROG: BUSY
++ACPROG: REORDER        // fast busy / reorder
++ACPROG: SIT,<code>     // special information tone, when classified
++ACPROG: VOICE          // voice/answer detected, no carrier
++ACPROG: CARRIER,<rate> // answering carrier detected
++ADTMF: <digit>         // DTMF digit detected inbound during the call
+```
+
+These are reported only when the active backend performs call-progress or
+DTMF detection; they are advisory and do not change the single terminal result
+code (`CONNECT`, `BUSY`, `NO DIALTONE`, `NO ANSWER`, `NO CARRIER`, `ERROR`).
+On a successful connect the modem emits `CONNECT` and, where the backend
+reports a negotiated line rate, `CONNECT <rate>`.
+
 ## 8. Online mode
 
 ONLINE_DATA forwards bytes transparently to the active ModeAdapter except escape-sequence candidates.

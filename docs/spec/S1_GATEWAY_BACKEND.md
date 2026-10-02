@@ -69,6 +69,41 @@ DELAYED    ECHO with configured bounded delay
 
 Loopback can simulate dial progress, BUSY, NO_ANSWER, NO_DIALTONE, remote hangup, and slow reader for flow-control tests.
 
+## 4a. DTMF and call-progress backend interface
+
+Backends that drive a real audio/telephony path (serial modem, and later
+PBX/SpanDSP) extend the lifecycle interface:
+
+```text
+sendDtmf(handle, digits, timing) -> async   // digits 0-9 A-D * # , ; timing = tone_ms,gap_ms
+```
+
+Additional callbacks (optional; a backend that cannot detect a given event
+simply never fires it):
+
+```text
+onTone(tone, detail?)   // DIAL_TONE|RINGBACK|BUSY|REORDER|SIT|VOICE|CARRIER
+onDtmf(digit)           // inbound DTMF digit detected in the call audio
+```
+
+The gateway forwards `sendDtmf` from the Android `AT+DTMF` command and relays
+`onTone`/`onDtmf` to Android as the `+ACPROG`/`+ADTMF` informational events
+(`S1_AT_DTE.md`). Tone classification maps to the dial-failure reasons already
+defined in `S1_WIRE_PROTOCOL.md`: a classified BUSY tone yields `DIAL_FAILED
+BUSY`, absence of dial tone yields `NO_DIALTONE`, ringback with no answer
+before `connect_timeout_ms` yields `NO_ANSWER`. Detection quality is backend-
+and hardware-dependent and is not guaranteed in Beta; detection is advisory
+and never changes the single terminal outcome of a call.
+
+For the serial modem backend, DTMF generation and call-progress/busy detection
+rely on the modem's own capabilities (for example `ATDT` with embedded digits,
+`ATX<n>` call-progress result levels, and busy detection); the gateway maps the
+modem result codes to the callbacks above.
+
+The `loopback` backend MAY simulate `onTone` and `onDtmf` for tests but
+generates no audio. No backend performs unattended multi-number dialing; the
+gateway dials exactly the one target per call it is given.
+
 ## 5. Serial modem configuration
 
 ```text
