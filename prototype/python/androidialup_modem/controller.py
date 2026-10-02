@@ -164,10 +164,16 @@ class ModemController:
     def _feed_online(self, data: bytes, now_ms: int) -> None:
         escape_char = self.engine.profile.s_registers[2]
         guard_ms = self.engine.profile.s_registers[12] * 20
+        forward = bytearray()
         for byte in data:
             action = self.escape.feed(byte, now_ms, escape_char, guard_ms)
             if action.forward:
-                self.session_port.write_data(action.forward)
+                forward.extend(action.forward)
+        if forward:
+            # Preserve one DTE read as a bounded handoff rather than producing
+            # one relay operation per octet. The ModeAdapter performs its own
+            # protocol-sized chunking afterwards.
+            self.session_port.write_data(bytes(forward))
 
     def on_timer(self, now_ms: int) -> None:
         if self.state != ModemState.ONLINE_DATA:
