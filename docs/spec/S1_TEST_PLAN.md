@@ -13,6 +13,7 @@ GATEWAY
 END_TO_END
 IMPAIRMENT
 HARDWARE_INTEROP
+CELLULAR_VOICE_EXPERIMENT   (Phase X1 only; never part of a Beta exit gate, see §16)
 ```
 
 No module is accepted solely because it round-trips against itself.
@@ -210,6 +211,9 @@ clock error: -100, -50, 0, +50, +100 ppm
 
 Actual modem waveform survivability is measured later with independent external vectors.
 
+These PCM tests characterise the IP path only. They SHALL NOT be cited as evidence about
+cellular voice calls (BETA_0_1_ARCHITECTURE §12.1). Cellular voice is covered by §16.
+
 ## 12. Diagnostics acceptance
 
 For every active call diagnostic snapshot must provide:
@@ -276,3 +280,54 @@ Phase I1 passes only when all are true:
 9. no unbounded resource growth in sequential-call test.
 
 Hardware-modem dial is the later I5 exit gate, not required to claim I1 complete.
+
+## 16. Cellular voice experiments (Phase X1, non-gating for Beta)
+
+Status: these rows define the X1 acceptance matrix. They are not I1–I5 exit criteria, and a
+failure here SHALL NOT block any packet-data gate (S1_MEDIA_DSP_CONTRACT §16.1). The full
+definitions (equipment, vectors, measurements, pre-registered predictions) are in
+`docs/research/CELLULAR_VOICE_EXPERIMENTS_R2.md` (X1). The simulator interfaces are in
+S1_MEDIA_DSP_CONTRACT §13.1–§13.3. Values tagged [P] are project-chosen test parameters
+defined in X1 §0. They are not sourced claims.
+
+### 16.1 Simulation rows (rig R-SIM)
+
+| ID | Test | External vectors / oracle | Pass criterion | Gate |
+|---|---|---|---|---|
+| S-01 | Codec stages bit-exact | 3GPP TS 26.074, 26.174, 26.444 sequences (CEL-081..083) | Bit-exact for every mode used, else stage flagged non-reference and excluded | G-X1-0 |
+| S-02 | DTX/VAD timing | V-CODEC DTX sequences; P.501 signals (CEL-085) | Reference DTX reproduced (AMR 7-frame hangover, SID_FIRST, SID every 8 frames, CEL-003; EVS SID interval, CEL-073); parametric model matches reference frame-for-frame | G-X1-0 |
+| S-03 | Frame-aligned loss, PLC, JBM | G.191 STL erasure patterns (CEL-086); TS 26.444 JBM profiles | Decoder output bit-exact vs reference for same erasure pattern; erasures on 20 ms boundaries; JBM matches TS 26.444 outputs | G-X1-0 |
+| S-04 | Terminal AEC/NS/AGC models | P.501 TCL signals | Deterministic and seeded; not used for predictions until fitted to E-11 | G-X1-3 (use gate) |
+| S-05 | Legacy modem negative control | minimodem/SpanDSP vectors; external receivers only | All cells executed and reported against the pre-registered failure prediction | G-X1-2 |
+| S-06 | CTM calibration | TS 26.230 reference CTM (CEL-012) | Meets TS 26.231 (CEL-013) in its specified conditions; failure invalidates the simulator | G-X1-0 |
+| S-07 | CVDM design sweep | O.150 PRBS (CEL-084); independent second receiver | Residual error 0 over ≥ [P] 1 MiB per codec family; no SID frames during payload with DTX on; goodput reported | G-X1-3 |
+| S-08 | Tandem chains | G.711 from G.191 STL | CTM still passes on NB-terminated tandems; CVDM residual error 0, or the chain is listed unsupported | G-X1-3 |
+
+### 16.2 Live rows (rigs R-HFP, R-ACC, R-INCALL, R-PRIV)
+
+Every live row SHALL record path, codec label, entry point, device, operator and topology
+(S1_MEDIA_DSP_CONTRACT §16.7).
+
+| ID | Test | Path | Pass criterion | Gate |
+|---|---|---|---|---|
+| E-01 | Rig baseline + codec labelling | each available | 3 repeat calls: same codec label, latency spread ≤ one 20 ms frame | G-X1-1 |
+| E-02 | SCO stage isolation (CVSD vs mSBC, CEL-047) | each available | SCO contribution quantified | G-X1-1 |
+| E-03 | CTM/TTY positive control | CS (CTM), IMS (TTY/RTT) | Meets TS 26.231 on ≥ 1 path where supported; failure makes rig negatives inadmissible | G-X1-1 |
+| E-04 | FSK negative control (Bell 103, V.21, V.23, Bell 202) | all | Executed and reported; SURVIVES only per X1 §3 E-04 | G-X1-2 |
+| E-05 | QAM/fax negative control (V.22, V.22bis, V.32bis, V.34, G3 fax) | all | Handshake traces archived; SURVIVES requires CONNECT + byte-exact ≥ [P] 64 KiB with independent hardware peers | G-X1-2 |
+| E-06 | CVDM over GSM/UMTS CS | FR/EFR/AMR-NB | Residual error 0 over ≥ [P] 1 MiB; no DTX events; two-receiver agreement | G-X1-3 |
+| E-07 | CVDM over VoLTE AMR-WB | AMR-WB set 0 (CEL-033) | As E-06; WB tone plan admitted only on pass | G-X1-3 |
+| E-08 | CVDM over VoWiFi | as VoLTE (CEL-032) | As E-07 | G-X1-3 |
+| E-09 | CVDM over EVS (VoLTE-EVS, VoNR) | EVS (CEL-007, CEL-031) | As E-07 | G-X1-3 |
+| E-10 | Wired/USB accessory entry point | subset | Differences vs HFP quantified | — |
+| E-11 | Terminal AEC/NS/AGC characterisation | every rig × path | S-04 parameters fitted; half-duplex rule (MEDIA_DSP §16.5 item 7) confirmed or refuted | G-X1-3 |
+| E-12 | IMS RTT signalling channel (CEL-027, CEL-043) | VoLTE/VoNR with RTT | Byte-exact over ≥ [P] 64 KiB; throughput/latency per carrier | — (hierarchy step 3 eligibility) |
+| E-13 | CSD/IWF availability survey (CEL-017) | GSM/UMTS operators | Dated per-operator table | — |
+| E-14 | Call-topology/tandem matrix | same-op, cross-op, mobile→PSTN, mobile→SIP | Each product topology measured; failing ones listed unsupported | G-X1-4 |
+| E-15 | Duration/handover/rate-switch robustness | best E-06..E-09 path | Residual error 0 over ≥ [P] 30 min; no logical-session loss for outages below the link timeout | G-X1-4 |
+| E-16 | Privileged downlink capture cross-check (AND-004) | R-PRIV | SCO contribution confirmed or corrected | — (optional) |
+
+### 16.3 Claim gate
+
+No test report, UI string or release note may state that a mode works over a cellular voice
+call unless G-X1-4 (X1 §4) is met for that mode and path.

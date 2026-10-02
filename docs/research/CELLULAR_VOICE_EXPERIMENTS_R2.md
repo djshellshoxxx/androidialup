@@ -459,7 +459,7 @@ from different SoC vendors and [P] at least 2 operators where the path exists.
 | G-X1-1 Live rig accepted | E-01 pass on ≥ 1 IMS path and, where still in service, ≥ 1 CS path; E-02 done; **E-03 pass on ≥ 1 path where CTM/TTY is supported** | No live negative result is admissible (it could be a rig fault) |
 | G-X1-2 Controls reported | S-05, E-04, E-05 executed and published against their pre-registered predictions | No statement about legacy modes over cellular voice, positive or negative |
 | G-X1-3 CVDM go/no-go | S-07 and S-08 pass; E-06 or E-07 or E-09 pass with §1.4 agreement; E-11 completed for the chosen entry point | Track closes with a documented negative result; packet data unaffected |
-| G-X1-4 Claim gate | For any named mode and path: live pass on that path with a codec label, on [P] ≥ 2 devices and [P] ≥ 2 operators, with external vectors or independent receiver; for a legacy V-series or fax mode additionally an independent hardware peer (E-04/E-05 SURVIVES) | The mode is not described as working over cellular voice anywhere (UI, docs, release notes) |
+| G-X1-4 Claim gate | For any named mode and path: live pass on that path with a codec label, E-14 pass for each call topology claimed, E-15 pass on that path, on [P] ≥ 2 devices and [P] ≥ 2 operators, with external vectors or independent receiver; for a legacy V-series or fax mode additionally an independent hardware peer (E-04/E-05 SURVIVES) | The mode is not described as working over cellular voice anywhere (UI, docs, release notes) |
 
 The mode hierarchy that X1 tests (DD §5.4, MEDIA_DSP §16.3): packet data, then CVDM over the
 voice call, then IMS RTT signalling, then legacy waveform passthrough. The last is a negative
