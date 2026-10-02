@@ -46,7 +46,7 @@ public class DeviceCredentialAuthTest {
         Arrays.fill(nonce, (byte) 0xA5);
         DeviceCredentialAuth auth = new DeviceCredentialAuth(range(1, 32), range(100, 32));
         auth.accept(helloAck("relay-test"));
-        byte[] proof = auth.proofFor(new Messages.AuthChallenge(nonce, DeviceCredentialAuth.METHOD));
+        byte[] proof = auth.proofFor(null, null, new Messages.AuthChallenge(nonce, DeviceCredentialAuth.METHOD));
         assertArrayEquals(HexFormat.of().parseHex(
                 "7e404de0cb5e659f20d42d4409e79f07a87d50d781edf803e0380fae32a62ba9"), proof);
         assertEquals(32, proof.length);
@@ -56,12 +56,12 @@ public class DeviceCredentialAuthTest {
     public void rejectsMissingRelayIdUnknownMethodAndShortNonce() {
         DeviceCredentialAuth auth = new DeviceCredentialAuth(range(1, 32), range(100, 32));
         assertThrows(ProtocolException.class,
-                () -> auth.proofFor(new Messages.AuthChallenge(new byte[16], DeviceCredentialAuth.METHOD)));
+                () -> auth.proofFor(null, null, new Messages.AuthChallenge(new byte[16], DeviceCredentialAuth.METHOD)));
         auth.accept(helloAck("r"));
         assertThrows(ProtocolException.class,
-                () -> auth.proofFor(new Messages.AuthChallenge(new byte[16], "other-method")));
+                () -> auth.proofFor(null, null, new Messages.AuthChallenge(new byte[16], "other-method")));
         assertThrows(ProtocolException.class,
-                () -> auth.proofFor(new Messages.AuthChallenge(new byte[15], DeviceCredentialAuth.METHOD)));
+                () -> auth.proofFor(null, null, new Messages.AuthChallenge(new byte[15], DeviceCredentialAuth.METHOD)));
     }
 
     @Test
