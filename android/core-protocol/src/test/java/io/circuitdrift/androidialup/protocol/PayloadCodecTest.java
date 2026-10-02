@@ -89,7 +89,7 @@ class PayloadCodecTest {
         assertArrayEquals(hex("ffffffffffffffff"), PayloadCodec.encode(new Pong(-1L)));
         assertArrayEquals(hex("0004000000000007"), PayloadCodec.encode(new FlowStatus(262144, 7)));
         assertArrayEquals(hex("00000000000000016162"), PayloadCodec.encode(new DataBytes(1, new byte[]{'a', 'b'})));
-        assertArrayEquals(hex("00060100"), PayloadCodec.encode(new CallProgress(ProgressPhase.CONNECTED, "")));
+        assertArrayEquals(hex("0006010000"), PayloadCodec.encode(new CallProgress(ProgressPhase.CONNECTED, "")));
         assertArrayEquals(hex("000600"), PayloadCodec.encode(new CallProgress(ProgressPhase.CONNECTED, null)));
         assertArrayEquals(new byte[0], PayloadCodec.encode(new AuthBegin()));
         assertArrayEquals(new byte[0], PayloadCodec.encode(new HangupAck()));
