@@ -11,17 +11,20 @@ on:
       - '.github/workflows/android-core-tests.yml'
 
 jobs:
-  core-network:
+  android-control-plane:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK platform
+        run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.10.2'
-      - name: Run core network tests
+          gradle-version: '9.6.0'
+      - name: Run control-plane tests and compile Android adapter
         working-directory: android
-        run: gradle :core-network:test --stacktrace
+        run: gradle :core-network:test :platform-android:testDebugUnitTest :platform-android:assembleDebug --stacktrace
