@@ -183,9 +183,10 @@ class RelaySessionPort:
             try:
                 hello_ack = await asyncio.wait_for(self._handshake(connection), self.timeouts.relay_auth)
             except asyncio.TimeoutError as exc:
+                connection.abort()  # silent relay: do not wait for a TLS close exchange
                 raise RelayLinkError(LinkFailure("AUTH_FAILURE", DETAIL_AUTH_TIMEOUT)) from exc
         except BaseException:
-            await connection.close()
+            await connection.close(grace=self.timeouts.disconnect_grace)
             raise
 
         if self._heartbeat_override is not None:
@@ -268,7 +269,7 @@ class RelaySessionPort:
             pass
         await self._stop_transport()
 
-    async def _stop_transport(self) -> None:
+    async def _stop_transport(self, *, abort: bool = False) -> None:
         current = asyncio.current_task()
         tasks = [
             task
@@ -283,8 +284,11 @@ class RelaySessionPort:
         self._tx_task = None
         self._liveness_task = None
         if self.connection is not None:
-            with suppress(Exception):
-                await self.connection.close()
+            if abort:
+                self.connection.abort()
+            else:
+                with suppress(Exception):
+                    await self.connection.close(grace=self.timeouts.disconnect_grace)
             self.connection = None
 
     def _link_failed(self, failure: LinkFailure) -> None:
@@ -296,7 +300,8 @@ class RelaySessionPort:
         if self._call_id != ZERO_ID:
             self._notify_terminal(failure.reason, failure.detail)
         self._closed = True
-        asyncio.get_running_loop().create_task(self._stop_transport())
+        # The peer is presumed dead or misbehaving: no TLS close_notify exchange.
+        asyncio.get_running_loop().create_task(self._stop_transport(abort=True))
 
     async def _liveness_loop(self) -> None:
         """Heartbeat and DIAL_REQUEST-acknowledgement deadlines (monotonic)."""

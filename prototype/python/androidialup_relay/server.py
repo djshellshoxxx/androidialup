@@ -83,13 +83,16 @@ class RelayTcpServer:
         self._server = None
         if server is not None:
             server.close()
-            await server.wait_closed()
+        # Cancel client tasks before wait_closed(): since Python 3.12
+        # Server.wait_closed() also waits for every accepted connection.
         tasks = [task for task in self._client_tasks if task is not asyncio.current_task()]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._client_tasks.clear()
+        if server is not None:
+            await server.wait_closed()
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
@@ -110,7 +113,10 @@ class RelayTcpServer:
             session.abort(failure)
             self.close_records.append(failure)
             self.connections.discard(connection)
-            await connection.close()
+            if failure.detail in {DETAIL_HEARTBEAT_TIMEOUT, DETAIL_TRANSPORT_ERROR}:
+                connection.abort()  # peer unresponsive or transport broken
+            else:
+                await connection.close(grace=self.timeouts.disconnect_grace)
             if task is not None:
                 self._client_tasks.discard(task)
 

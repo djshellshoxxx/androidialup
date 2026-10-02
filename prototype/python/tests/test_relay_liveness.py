@@ -1,4 +1,5 @@
 import asyncio
+import ssl
 import tempfile
 import time
 import unittest
@@ -119,7 +120,8 @@ class RelayLivenessTests(unittest.IsolatedAsyncioTestCase):
         return self.server.close_records[0]
 
     async def assert_closed_by_relay(self, connection, timeout=2.0):
-        with self.assertRaises(ConnectionClosed):
+        # Orderly close gives EOF; an abort may surface as a reset instead.
+        with self.assertRaises((ConnectionClosed, ConnectionError, ssl.SSLError)):
             while True:
                 await asyncio.wait_for(connection.recv_frame(), timeout)
 
