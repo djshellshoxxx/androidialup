@@ -17,4 +17,5 @@ dependencyResolutionManagement {
 rootProject.name = 'androidialup-android'
 include 'core-network'
 include 'core-protocol'
+include 'core-modem'
 include 'platform-android'
