@@ -6,6 +6,7 @@ import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 
 import io.circuitdrift.androidialup.network.NetworkCandidate;
+import io.circuitdrift.androidialup.network.NetworkDiagnosticsSnapshot;
 import io.circuitdrift.androidialup.network.NetworkPolicy;
 import io.circuitdrift.androidialup.network.NetworkSelectionEngine;
 import io.circuitdrift.androidialup.network.NetworkTransport;
@@ -35,6 +36,9 @@ public final class AndroidNetworkManager implements AutoCloseable {
     private boolean activeCall;
     private Network selectedNetwork;
     private boolean started;
+    private NetworkSelectionEngine.SelectionDecision lastDecision =
+            new NetworkSelectionEngine.SelectionDecision(
+                    null, false, false, null, "NO_ELIGIBLE_NETWORK", Map.of());
 
     public AndroidNetworkManager(ConnectivityManager connectivityManager, Listener listener) {
         this(connectivityManager, new NetworkSelectionEngine(), listener);
@@ -76,6 +80,8 @@ public final class AndroidNetworkManager implements AutoCloseable {
         started = false;
         candidates.clear();
         selectedNetwork = null;
+        lastDecision = new NetworkSelectionEngine.SelectionDecision(
+                null, true, false, null, "NO_ELIGIBLE_NETWORK", Map.of());
     }
 
     public synchronized void setPolicy(NetworkPolicy policy) {
@@ -107,6 +113,11 @@ public final class AndroidNetworkManager implements AutoCloseable {
 
     public synchronized Map<Network, NetworkCandidate> snapshot() {
         return Map.copyOf(candidates);
+    }
+
+    public synchronized NetworkDiagnosticsSnapshot diagnostics() {
+        return NetworkDiagnosticsSnapshot.from(
+                policy, selectedCandidate(), lastDecision, activeCall, developerOverride);
     }
 
     public synchronized void updateRelayProbe(Network network, Double rttMs, Double lossFraction) {
@@ -151,6 +162,7 @@ public final class AndroidNetworkManager implements AutoCloseable {
         String selectedId = selectedNetwork == null ? null : networkId(selectedNetwork);
         NetworkSelectionEngine.SelectionDecision decision = selectionEngine.select(
                 new ArrayList<>(candidates.values()), policy, selectedId, activeCall, developerOverride);
+        lastDecision = decision;
 
         Network next = networkForId(decision.selectedId());
         NetworkCandidate nextCandidate = next == null ? null : candidates.get(next);
