@@ -155,8 +155,11 @@ public final class AndroidNetworkManager implements AutoCloseable {
         Network next = networkForId(decision.selectedId());
         NetworkCandidate nextCandidate = next == null ? null : candidates.get(next);
 
-        if (decision.betterNetworkAvailable() && next != null) {
-            listener.onBetterNetworkAvailable(next, nextCandidate, decision);
+        if (decision.betterNetworkAvailable()) {
+            Network better = networkForId(decision.betterNetworkId());
+            if (better != null) {
+                listener.onBetterNetworkAvailable(better, candidates.get(better), decision);
+            }
         }
 
         if (decision.changed()) {
