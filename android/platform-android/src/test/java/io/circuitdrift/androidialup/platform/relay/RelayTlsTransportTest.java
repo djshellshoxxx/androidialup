@@ -78,7 +78,7 @@ public class RelayTlsTransportTest {
 
     private static RelaySessionMachine machine() {
         byte[] call = FakeRelayServer.filled(0x43);
-        return new RelaySessionMachine(new byte[32], challenge -> new byte[] {1, 2, 3}, call::clone);
+        return new RelaySessionMachine(new byte[32], (r, e, challenge) -> new byte[] {1, 2, 3}, call::clone);
     }
 
     private RelayTlsTransport start(RelayTlsTransport.Connector connector, AtomicLong clock, long tickMs) {

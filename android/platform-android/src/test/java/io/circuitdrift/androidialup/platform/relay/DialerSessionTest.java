@@ -40,7 +40,7 @@ public class DialerSessionTest {
         relay = new FakeRelayServer();
         log.addListener(records::add);
         dialer = new DialerSession(listener -> new RelayModemSessionPort.Connection(
-                new RelayTlsTransport(new RelaySessionMachine(new byte[32], c -> new byte[] {1},
+                new RelayTlsTransport(new RelaySessionMachine(new byte[32], (r, e, c) -> new byte[] {1},
                         () -> FakeRelayServer.filled(0x31)), relay.connector(), listener,
                         () -> System.nanoTime() / 1_000_000, RelayTlsTransport.Config.DEFAULT),
                 Messages.NetworkTransport.WIFI),

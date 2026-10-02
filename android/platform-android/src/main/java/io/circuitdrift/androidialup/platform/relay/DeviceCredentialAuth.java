@@ -60,13 +60,16 @@ public final class DeviceCredentialAuth implements RelaySessionMachine.AuthProof
     }
 
     @Override
-    public byte[] proofFor(Messages.AuthChallenge challenge) {
+    public byte[] proofFor(String relayId, byte[] endpointId, Messages.AuthChallenge challenge) {
         if (!METHOD.equals(challenge.method())) {
             throw new ProtocolException("unsupported relay auth method");
         }
-        String relay = relayId;
+        // The session machine now supplies relay_id (from HELLO_ACK) and endpoint_id directly;
+        // fall back to the HELLO_ACK observer / constructor values if a caller passes null.
+        String relay = relayId != null ? relayId : this.relayId;
         if (relay == null) throw new ProtocolException("AUTH_CHALLENGE before HELLO_ACK relay_id");
-        return proof(secret, challenge.nonce(), endpointId, relay);
+        byte[] ep = (endpointId != null && endpointId.length == 32) ? endpointId : this.endpointId;
+        return proof(secret, challenge.nonce(), ep, relay);
     }
 
     /** {@code HMAC-SHA256(secret, transcript(nonce, endpointId, relayId))}, 32 bytes. */

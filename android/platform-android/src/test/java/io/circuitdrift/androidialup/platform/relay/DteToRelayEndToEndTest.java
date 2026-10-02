@@ -45,7 +45,7 @@ public class DteToRelayEndToEndTest {
                 if (noNetwork) {
                     throw new RelayConnectException(RelayConnectException.NO_ELIGIBLE_NETWORK, "test");
                 }
-                RelaySessionMachine machine = new RelaySessionMachine(new byte[32], c -> new byte[] {1},
+                RelaySessionMachine machine = new RelaySessionMachine(new byte[32], (r, e, c) -> new byte[] {1},
                         () -> FakeRelayServer.filled(0x21));
                 RelayTlsTransport transport = new RelayTlsTransport(machine, relay.connector(), listener,
                         () -> System.nanoTime() / 1_000_000, RelayTlsTransport.Config.DEFAULT);
