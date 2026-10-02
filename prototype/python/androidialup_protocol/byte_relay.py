@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .frame import ProtocolError
 from .messages import DataBytes, FlowStatus, MAX_DATA_BYTES
@@ -10,7 +10,7 @@ MAX_LOCAL_PENDING = 256 * 1024
 
 
 class FlowControlBlocked(RuntimeError):
-    """The peer cannot currently accept the requested bytes."""
+    """Local bounded pending storage cannot accept more user bytes."""
 
 
 @dataclass(slots=True)
@@ -36,6 +36,7 @@ class ByteRelaySender:
     peer_receive_window: int = DEFAULT_RECEIVE_WINDOW
     peer_queued_bytes: int = 0
     sent_bytes: int = 0
+    _pending: bytearray = field(default_factory=bytearray, repr=False)
 
     def update_flow(self, status: FlowStatus) -> None:
         self.peer_receive_window = status.receive_window_bytes
@@ -45,26 +46,26 @@ class ByteRelaySender:
     def available_window(self) -> int:
         return self.peer_receive_window
 
+    @property
+    def pending_bytes(self) -> int:
+        return len(self._pending)
+
     def build(self, data: bytes) -> list[DataBytes]:
         raw = bytes(data)
-        if not raw:
-            return []
-        if len(raw) > MAX_LOCAL_PENDING:
-            raise ValueError("BYTE_RELAY submission exceeds local pending limit")
-        if len(raw) > self.peer_receive_window:
-            raise FlowControlBlocked(
-                f"peer receive window {self.peer_receive_window} cannot accept {len(raw)} bytes"
-            )
+        if raw:
+            if len(self._pending) + len(raw) > MAX_LOCAL_PENDING:
+                raise FlowControlBlocked("BYTE_RELAY local pending limit exceeded")
+            self._pending.extend(raw)
+        return self.drain()
 
+    def drain(self) -> list[DataBytes]:
         messages: list[DataBytes] = []
-        offset = 0
-        while offset < len(raw):
-            chunk = raw[offset : offset + MAX_DATA_BYTES]
+        while self._pending and self.peer_receive_window > 0:
+            take = min(MAX_DATA_BYTES, self.peer_receive_window, len(self._pending))
+            chunk = bytes(self._pending[:take])
+            del self._pending[:take]
             messages.append(DataBytes(self.next_stream_seq, chunk))
             self.next_stream_seq += len(chunk)
             self.sent_bytes += len(chunk)
-            offset += len(chunk)
-
-        # Account pessimistically until the peer publishes a newer FLOW_STATUS.
-        self.peer_receive_window -= len(raw)
+            self.peer_receive_window -= len(chunk)
         return messages
