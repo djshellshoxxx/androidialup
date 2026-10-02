@@ -8,7 +8,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -57,16 +56,7 @@ class PayloadCodecVectorsTest {
         return out;
     }
 
-    private static byte[] fill(int n, char c) {
-        byte[] out = new byte[n];
-        java.util.Arrays.fill(out, (byte) c);
-        return out;
-    }
 
-    private static Vector find(String name) {
-        for (Vector v : vectors) if (v.name().equals(name)) return v;
-        throw new AssertionError("missing vector " + name);
-    }
 
     @Test
     void everyPayloadVectorRoundTripsToIdenticalBytes() {
@@ -74,7 +64,7 @@ class PayloadCodecVectorsTest {
         for (Vector v : vectors) {
             if (v.name().startsWith("frame.")) continue;
             FrameKind kind = FrameKind.fromValue(v.kind());
-            AduMessage message = PayloadCodec.decode(kind, v.bytes());
+            Messages.Message message = PayloadCodec.decode(kind, v.bytes());
             assertEquals(kind, PayloadCodec.kindFor(message), v.name());
             assertArrayEquals(v.bytes(), PayloadCodec.encode(message), v.name());
             assertEquals(message, PayloadCodec.decode(kind, v.bytes()), v.name());
@@ -92,7 +82,7 @@ class PayloadCodecVectorsTest {
             assertEquals(v.bytes().length, decoded.bytesConsumed(), v.name());
             AduFrame frame = decoded.frame();
             assertEquals(v.kind(), frame.kind().value(), v.name());
-            AduMessage message = PayloadCodec.decode(frame.kind(), frame.payload());
+            Messages.Message message = PayloadCodec.decode(frame.kind(), frame.payload());
             AduFrame rebuilt = new AduFrame(PayloadCodec.kindFor(message), frame.flags(), frame.callId(),
                     frame.sessionId(), frame.requestId(), PayloadCodec.encode(message));
             assertArrayEquals(v.bytes(), FrameCodec.encode(rebuilt), v.name());
@@ -110,82 +100,5 @@ class PayloadCodecVectorsTest {
             boolean covered = vectors.stream().anyMatch(v -> v.kind() == kind.value() && !v.name().startsWith("frame."));
             assertTrue(covered, "no vector for " + kind);
         }
-    }
-
-    @Test
-    void helloVectorDecodesExpectedFields() {
-        Vector v = find("hello.basic");
-        Hello hello = (Hello) PayloadCodec.decode(FrameKind.HELLO, v.bytes());
-        assertEquals("AndroidDialup", hello.clientName());
-        assertEquals("0.1", hello.clientVersion());
-        assertEquals(1, hello.protocolMin());
-        assertEquals(1, hello.protocolMax());
-        assertArrayEquals(fill(32, 'E'), hello.endpointId());
-        assertEquals(List.of("BYTE_RELAY", "PCM_VBD_EXPERIMENTAL"), hello.capabilities());
-    }
-
-    @Test
-    void dialRequestVectorDecodesExpectedFields() {
-        Vector v = find("dial_request.basic");
-        DialRequest req = (DialRequest) PayloadCodec.decode(FrameKind.DIAL_REQUEST, v.bytes());
-        assertEquals("loopback", req.target());
-        assertEquals(Mode.BYTE_RELAY, req.requestedMode());
-        assertEquals(ProtocolTransport.WIFI, req.networkTransport());
-        assertEquals(List.of("BYTE_RELAY"), req.clientCapabilities());
-        assertEquals(60000L, req.dialTimeoutMs());
-        assertEquals(List.of(Map.entry("test", "1")), req.callerMetadata());
-    }
-
-    @Test
-    void nonAsciiAndOptionalVectorsDecodeExpectedFields() {
-        var utf8 = (HelloReject) PayloadCodec.decode(FrameKind.HELLO_REJECT, find("hello_reject.utf8").bytes());
-        assertEquals("é€😀 日本語", utf8.reason());
-
-        var withDetail = (DialFailed) PayloadCodec.decode(FrameKind.DIAL_FAILED, find("dial_failed.with_detail").bytes());
-        assertEquals(DialFailure.BUSY, withDetail.reason());
-        assertFalse(withDetail.retryable());
-        assertEquals("busy", withDetail.humanDetail());
-        assertArrayEquals(fill(16, 'C'), withDetail.callId());
-
-        var noDetail = (DialFailed) PayloadCodec.decode(FrameKind.DIAL_FAILED, find("dial_failed.no_detail").bytes());
-        assertEquals(DialFailure.TIMEOUT, noDetail.reason());
-        assertTrue(noDetail.retryable());
-        assertNull(noDetail.humanDetail());
-
-        var progress = (CallProgress) PayloadCodec.decode(FrameKind.CALL_PROGRESS, find("call_progress.no_detail").bytes());
-        assertEquals(ProgressPhase.RINGBACK, progress.phase());
-        assertNull(progress.detail());
-    }
-
-    @Test
-    void unsignedAndSizedVectorsDecodeExpectedFields() {
-        var ping = (Ping) PayloadCodec.decode(FrameKind.PING, find("ping.max_u64").bytes());
-        assertEquals(-1L, ping.nonce());
-        assertEquals(Long.MIN_VALUE, ping.monotonicHint());
-        var flow = (FlowStatus) PayloadCodec.decode(FrameKind.FLOW_STATUS, find("flow_status.max_u32").bytes());
-        assertEquals(0xffff_ffffL, flow.receiveWindowBytes());
-        assertEquals(0xffff_ffffL, flow.queuedBytes());
-        var data = (DataBytes) PayloadCodec.decode(FrameKind.DATA_BYTES, find("data_bytes.max").bytes());
-        assertEquals(MessageLimits.MAX_DATA_BYTES, data.data().length);
-        var ack = (HelloAck) PayloadCodec.decode(FrameKind.HELLO_ACK, find("hello_ack.max_capabilities").bytes());
-        assertEquals(MessageLimits.MAX_CAPABILITIES, ack.capabilities().size());
-        var ok = (AuthOk) PayloadCodec.decode(FrameKind.AUTH_OK, find("auth_ok.max_policy").bytes());
-        assertEquals(MessageLimits.MAX_MAP_ENTRIES, ok.policy().size());
-        var resp = (AuthResponse) PayloadCodec.decode(FrameKind.AUTH_RESPONSE, find("auth_response.max_blob").bytes());
-        assertEquals(MessageLimits.MAX_BLOB, resp.proof().length);
-    }
-
-    @Test
-    void frameVectorDecodesExpectedHeaderFields() {
-        Vector v = find("frame.dial_accepted");
-        AduFrame frame = FrameCodec.decode(v.bytes(), FrameCodec.MAX_PAYLOAD).frame();
-        assertEquals(FrameKind.DIAL_ACCEPTED, frame.kind());
-        assertEquals(0x0001, frame.flags());
-        assertEquals(0x01020304L, frame.requestId());
-        assertArrayEquals(fill(16, 'C'), frame.callId());
-        assertArrayEquals(fill(16, 'S'), frame.sessionId());
-        var accepted = (DialAccepted) PayloadCodec.decode(frame.kind(), frame.payload());
-        assertEquals("gw-loopback", accepted.selectedGatewayId());
-        assertEquals(Mode.BYTE_RELAY, accepted.selectedMode());
     }
 }

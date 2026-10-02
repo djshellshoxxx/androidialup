@@ -3,94 +3,69 @@ package io.circuitdrift.androidialup.protocol;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Objects;
 
-/**
- * Incremental ADUP v1 frame decoder for a reliable byte stream. Mirrors
- * prototype/python/androidialup_protocol/stream.py.
- *
- * <p>Feed arbitrary chunks (split headers, split payloads, several frames at once) and receive
- * every frame that became complete. Once {@link #feed(byte[])} throws, the connection must be
- * closed: the decoder makes no attempt to resynchronise.
- *
- * <p>Not thread-safe: a single reader thread owns an instance.
- */
 public final class FrameStreamDecoder {
     private final int maxPayload;
     private final int maxBuffer;
-    private byte[] buffer = new byte[256];
-    private int length;
+    private byte[] buffer = new byte[0];
 
-    /** Decoder for the protocol maximum payload with the default buffer limit. */
     public FrameStreamDecoder() {
-        this(FrameCodec.MAX_PAYLOAD, 0);
+        this(FrameCodec.MAX_PAYLOAD, (FrameCodec.FIXED_HEADER_LEN + FrameCodec.MAX_PAYLOAD) * 2);
     }
 
-    /** Decoder for a negotiated payload maximum (clamped to the protocol maximum). */
-    public FrameStreamDecoder(int maxPayload) {
-        this(maxPayload, 0);
-    }
-
-    /**
-     * @param maxPayload negotiated payload maximum; clamped to {@link FrameCodec#MAX_PAYLOAD}
-     * @param maxBuffer hard limit on buffered bytes; {@code <= 0} selects the default of
-     *     {@code (FIXED_HEADER_LEN + maxPayload) * 2}
-     */
     public FrameStreamDecoder(int maxPayload, int maxBuffer) {
-        this.maxPayload = Math.min(Math.max(maxPayload, 0), FrameCodec.MAX_PAYLOAD);
-        this.maxBuffer = maxBuffer > 0 ? maxBuffer : (FrameCodec.FIXED_HEADER_LEN + this.maxPayload) * 2;
+        if (maxPayload < 0 || maxPayload > FrameCodec.MAX_PAYLOAD) {
+            throw new IllegalArgumentException("maxPayload out of range");
+        }
+        if (maxBuffer < FrameCodec.FIXED_HEADER_LEN) {
+            throw new IllegalArgumentException("maxBuffer smaller than fixed header");
+        }
+        this.maxPayload = maxPayload;
+        this.maxBuffer = maxBuffer;
     }
 
-    public int maxPayload() { return maxPayload; }
-    public int maxBuffer() { return maxBuffer; }
+    public int bufferedBytes() {
+        return buffer.length;
+    }
 
-    /** Number of bytes held while waiting for the rest of a frame. */
-    public int bufferedBytes() { return length; }
+    public List<AduFrame> feed(byte[] input) {
+        if (input == null) throw new NullPointerException("input");
+        if ((long) buffer.length + input.length > maxBuffer) {
+            throw new ProtocolException("stream buffer limit exceeded");
+        }
 
-    /**
-     * Appends {@code data} and returns every frame completed by it, in stream order.
-     *
-     * @throws ProtocolException if the buffer limit would be exceeded (the data is then not
-     *     buffered), if a header is malformed, or if a frame is larger than the negotiated
-     *     payload maximum or the buffer limit
-     */
-    public List<AduFrame> feed(byte[] data) {
-        Objects.requireNonNull(data, "data");
-        if ((long) length + data.length > maxBuffer) throw new ProtocolException("stream buffer limit exceeded");
-        append(data);
+        byte[] joined = Arrays.copyOf(buffer, buffer.length + input.length);
+        System.arraycopy(input, 0, joined, buffer.length, input.length);
+        buffer = joined;
+
         List<AduFrame> frames = new ArrayList<>();
+        while (buffer.length >= FrameCodec.FIXED_HEADER_LEN) {
+            int headerLen = ((buffer[8] & 0xff) << 8) | (buffer[9] & 0xff);
+            long payloadLen = ((long) (buffer[10] & 0xff) << 24)
+                    | ((long) (buffer[11] & 0xff) << 16)
+                    | ((long) (buffer[12] & 0xff) << 8)
+                    | (long) (buffer[13] & 0xff);
 
-        while (length >= FrameCodec.FIXED_HEADER_LEN) {
-            int headerLen = ((buffer[8] & 0xFF) << 8) | (buffer[9] & 0xFF);
-            long payloadLen = ((long) (buffer[10] & 0xFF) << 24) | ((buffer[11] & 0xFF) << 16)
-                    | ((buffer[12] & 0xFF) << 8) | (buffer[13] & 0xFF);
-            if (headerLen < FrameCodec.FIXED_HEADER_LEN) throw new ProtocolException("header shorter than fixed header");
-            if (headerLen != FrameCodec.FIXED_HEADER_LEN) throw new ProtocolException("header extensions are not supported in Beta 0.1");
-            if (payloadLen > maxPayload) throw new ProtocolException("payload exceeds negotiated maximum");
-            long total = headerLen + payloadLen;
-            if (total > maxBuffer) throw new ProtocolException("frame exceeds stream buffer limit");
-            if (length < total) break;
+            if (headerLen < FrameCodec.FIXED_HEADER_LEN) {
+                throw new ProtocolException("header shorter than fixed header");
+            }
+            if (headerLen != FrameCodec.FIXED_HEADER_LEN) {
+                throw new ProtocolException("header extensions are not supported in Beta 0.1");
+            }
+            if (payloadLen > maxPayload) {
+                throw new ProtocolException("payload exceeds negotiated maximum");
+            }
+            long totalLong = (long) headerLen + payloadLen;
+            if (totalLong > maxBuffer) {
+                throw new ProtocolException("frame exceeds stream buffer limit");
+            }
+            int total = (int) totalLong;
+            if (buffer.length < total) break;
 
-            FrameCodec.Decoded decoded = FrameCodec.decode(Arrays.copyOf(buffer, (int) total), maxPayload);
+            FrameCodec.Decoded decoded = FrameCodec.decode(Arrays.copyOf(buffer, total), maxPayload);
             frames.add(decoded.frame());
-            consume(decoded.bytesConsumed());
+            buffer = Arrays.copyOfRange(buffer, decoded.bytesConsumed(), buffer.length);
         }
-        return frames;
-    }
-
-    private void append(byte[] data) {
-        int needed = length + data.length;
-        if (needed > buffer.length) {
-            int grown = Math.max(needed, Math.min(buffer.length * 2, maxBuffer));
-            buffer = Arrays.copyOf(buffer, grown);
-        }
-        System.arraycopy(data, 0, buffer, length, data.length);
-        length = needed;
-    }
-
-    private void consume(int count) {
-        int rest = length - count;
-        if (rest > 0) System.arraycopy(buffer, count, buffer, 0, rest);
-        length = rest;
+        return List.copyOf(frames);
     }
 }

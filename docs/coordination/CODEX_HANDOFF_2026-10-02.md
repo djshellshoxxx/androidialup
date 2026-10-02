@@ -12,13 +12,15 @@ concurrently delivering the following four tracks on branch
 edit anything in these areas; treat the listed paths as owned by Claude until
 that PR merges:
 
-1. **Java ADUP v1 typed payload codecs + incremental FrameStreamDecoder +
-   cross-language golden vectors.** Paths: `android/core-protocol/**`,
+1. **Cross-language golden vectors only.** Main already carries Codex's
+   Java `Messages`/`PayloadCodec`/`FrameStreamDecoder`, and Claude's duplicate
+   codec was dropped in favour of it. Claude keeps
    `prototype/python/tools/gen_adup_vectors.py`,
    `prototype/python/tests/vectors/**`,
-   `prototype/python/tests/test_protocol_vectors.py`.
-   Result: Java records for every message in `messages.py`, `PayloadCodec`,
-   `FrameStreamDecoder`, and a text vector file both languages must round-trip.
+   `prototype/python/tests/test_protocol_vectors.py` and
+   `android/core-protocol/.../PayloadCodecVectorsTest.java`, which runs every
+   shared vector through Codex's codec. Do not change payload byte layout
+   without regenerating the vectors.
 2. **Pure Java AT/V.250 parser, result-code engine, escape detector and modem
    state reducer.** Paths: `android/core-modem/**` (module already in
    `settings.gradle` and CI). Result: `AtLineParser`, `ModemProfile`,
@@ -38,6 +40,9 @@ that PR merges:
    `docs/spec/S1_MEDIA_DSP_CONTRACT.md`, `BETA_0_1_ARCHITECTURE.md`,
    `S1_SPEC_FREEZE.md`, `S1_TEST_PLAN.md`, and Phase X1 of
    `docs/PROJECT_PLAN.md`.
+
+Owned by Codex (Claude will not touch): `android/core-session/**` and
+`android/core-protocol/src/main/**`.
 
 Also owned by Claude's branch: `.gitignore`, `android/settings.gradle`,
 `.github/workflows/android-core-tests.yml`.
