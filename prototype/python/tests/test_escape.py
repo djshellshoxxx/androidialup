@@ -45,12 +45,21 @@ class EscapeDetectorTests(unittest.TestCase):
         self.assertEqual(bytes(out), b"+++")
         self.assertFalse(detector.timer(3000).escaped)
 
-    def test_incomplete_candidate_flushes_after_guard_timeout(self):
+    def test_incomplete_candidate_waits_full_guard_before_flush(self):
         detector = EscapeDetector(last_forwarded_ms=0)
         detector.feed(ord("+"), 1000, 43, 1000)
+        self.assertEqual(detector.timer(1999).forward, b"")
+        self.assertEqual(detector.timer(2000).forward, b"")
         action = detector.timer(2001)
         self.assertEqual(action.forward, b"+")
         self.assertFalse(action.escaped)
+
+    def test_two_plus_candidate_uses_last_character_for_timeout(self):
+        detector = EscapeDetector(last_forwarded_ms=0)
+        detector.feed(ord("+"), 1000, 43, 1000)
+        detector.feed(ord("+"), 1500, 43, 1000)
+        self.assertEqual(detector.timer(2500).forward, b"")
+        self.assertEqual(detector.timer(2501).forward, b"++")
 
     def test_binary_non_escape_bytes_are_forwarded_unchanged(self):
         detector = EscapeDetector(last_forwarded_ms=0)
