@@ -30,7 +30,6 @@ class NetworkSelectionEngineTest {
     void scoringMatchesFrozenS1Formula() {
         var engine = new NetworkSelectionEngine();
         var candidate = new NetworkCandidate("cell", NetworkTransport.CELLULAR, true, true, true, true, 100.0, 0.10);
-        // 1000 - 100 RTT - 100 loss - 25 metered - 50 roaming + 150 preference.
         assertEquals(875.0, engine.score(candidate, NetworkPolicy.PREFER_CELLULAR, false), 0.0001);
     }
 
@@ -81,6 +80,7 @@ class NetworkSelectionEngineTest {
         var decision = engine.select(List.of(selected, wifi), NetworkPolicy.AUTOMATIC, "cell", true, false);
         assertEquals("cell", decision.selectedId());
         assertTrue(decision.betterNetworkAvailable());
+        assertEquals("wifi", decision.betterNetworkId());
         assertFalse(decision.changed());
     }
 
