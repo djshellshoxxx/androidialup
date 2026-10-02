@@ -1,0 +1,28 @@
+plugins {
+    // No version: the Android Gradle plugin is already on the build classpath through the
+    // root build.gradle (com.android.library 9.4.0, same artifact as the application plugin).
+    id 'com.android.application'
+}
+
+android {
+    namespace 'io.circuitdrift.androidialup.app'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'io.circuitdrift.androidialup'
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName '0.1-dev'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // Plain Android framework views only: no AndroidX/Compose/third-party UI libraries.
+    implementation project(':platform-android')
+}

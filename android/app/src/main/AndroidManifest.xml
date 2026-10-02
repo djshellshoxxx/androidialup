@@ -1,0 +1,40 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Relay TLS connection and the loopback TCP DTE listener. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- ConnectivityManager.registerNetworkCallback / getNetworkCapabilities (AndroidNetworkManager). -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Runtime prerequisite of the connectedDevice foreground-service type (API 34+). -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <!-- Foreground service (API 28+) and its connectedDevice type permission (API 34+). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Runtime permission (API 33+) for the ongoing service notification to be visible. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:label="AndroidDialup"
+        android:allowBackup="false"
+        android:theme="@android:style/Theme.Material.Light.DarkActionBar">
+
+        <activity
+            android:name=".DialerActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".NetworkActivity"
+            android:exported="false" />
+
+        <!-- Owns AndroidNetworkManager, the TCP DTE server and the relay transport. The modem
+             serves an external computer (DTE) over a network link, hence connectedDevice. -->
+        <service
+            android:name=".ModemService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+    </application>
+</manifest>
