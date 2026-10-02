@@ -104,6 +104,57 @@ The `loopback` backend MAY simulate `onTone` and `onDtmf` for tests but
 generates no audio. No backend performs unattended multi-number dialing; the
 gateway dials exactly the one target per call it is given.
 
+## 4b. SIP-trunk backend (no-landline route to legacy modems)
+
+`sip_trunk` is the backend by which AndroidDialup reaches a legacy third-party
+modem on the public telephone network without any analog line or hardware
+operated by the user. It fits the same backend lifecycle interface (section 3)
+and is selected per call by gateway policy.
+
+Design assumption (operator decision, 2026-10-02): "no landline" means no
+analog line or telephony hardware the user runs. The copper/PSTN termination
+is provided by a cloud SIP/VoIP trunk service. The Android bearer remains
+Wi-Fi or cellular packet data; the gateway reaches the PSTN number through the
+trunk over IP.
+
+```text
+SipTrunkConfig {
+  provider_uri                 // SIP registrar / outbound proxy
+  auth_identity, auth_secret   // trunk credentials; never logged
+  codec            default PCMU   // G.711 u-law; PCMA permitted
+  vbd_mode         default V152    // voice-band-data handling
+  disable_vad      default true
+  disable_cng      default true    // no comfort-noise generation
+  disable_aec      default true    // no echo canceller on the data path
+  ptime_ms         default 20
+  modem_engine     SOFTMODEM | HARDWARE_RELAY
+  dial_timeout_ms  default 60000
+}
+```
+
+Normative constraints:
+
+- The media path SHALL carry modem signals as voice-band data per ITU-T V.152,
+  using G.711 (PCMU/PCMA) with a waveform-transparent profile: VAD, silence
+  suppression, comfort-noise generation and echo cancellation are disabled for
+  the call (`docs/research/V150_V152_DEEP_DIVE_R1.md`). Low-bitrate codecs SHALL
+  NOT be negotiated for a modem call.
+- Modem termination runs at the gateway, not on the phone: either a gateway
+  softmodem (Phase I4 `ModemPhy`) or a hardware/relay modem engine. The phone
+  speaks the project's own BYTE_RELAY session to the relay; V-series
+  negotiation happens between the gateway and the remote modem.
+- Trunk credentials and SIP signalling secrets never appear in diagnostics or
+  logs.
+- One PSTN target per call. The backend dials exactly the one number it is
+  given; it performs no range dialing.
+
+Reliability note: unlike a cellular voice call, a G.711 trunk is intended to be
+waveform-transparent, so modem passthrough/VBD is a recognised, workable path
+(`docs/research/GATEWAY_PBX_FINDINGS_R1.md`). Actual behaviour still depends on
+the provider not transcoding to a low-bitrate codec; the gateway SHALL verify
+the negotiated codec is G.711 and fail the call with `UNSUPPORTED_MODE` if a
+transparent codec cannot be negotiated.
+
 ## 5. Serial modem configuration
 
 ```text

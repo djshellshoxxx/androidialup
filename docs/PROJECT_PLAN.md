@@ -76,11 +76,20 @@ Implement/port after license decision:
 
 Exit criterion: Bell-103/V.21-class target chosen from primary standard decodes externally generated vectors and interoperates with at least one independent implementation or hardware path.
 
-## Phase I5 — remote hardware modem
+## Phase I5 — remote modem over hosted SIP trunk (no-landline route)
 
-Implement Linux serial modem backend and DTE/result-code mapping.
+Primary: implement the `sip_trunk` gateway backend (`S1_GATEWAY_BACKEND.md` 4b)
+so the gateway reaches a legacy PSTN modem through a cloud SIP/VoIP trunk over
+IP, with G.711 voice-band-data passthrough and the modem terminating at the
+gateway. No analog line or telephony hardware is operated by the user; the
+Android bearer is Wi-Fi or cellular packet data.
 
-Exit criterion: Android DTE can dial a real remote modem through the relay/gateway architecture using packet data as the Android bearer.
+Secondary (self-host only): the Linux USB serial-modem backend and DTE/result-
+code mapping, for setups that choose to attach a physical line.
+
+Exit criterion: Android DTE dials a real remote modem and exchanges data in
+both directions through the relay and a hosted SIP trunk, over packet data,
+with no analog hardware operated by the user.
 
 ## Phase R2/I6 — standards expansion
 

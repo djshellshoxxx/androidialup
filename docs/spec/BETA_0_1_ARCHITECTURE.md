@@ -529,6 +529,22 @@ Linux host
 
 The first gateway need not use Asterisk or FreeSWITCH. Those should be introduced when SIP/PSTN/VBD interoperability is being tested, not as dependencies for basic Android session correctness.
 
+### 17.1 No-landline route to legacy modems
+
+The route to a legacy third-party modem that uses no analog line or telephony
+hardware operated by the user is the `sip_trunk` gateway backend
+(`S1_GATEWAY_BACKEND.md` 4b): the gateway reaches the PSTN number through a
+cloud SIP/VoIP trunk over IP, carrying modem signals as G.711 voice-band data,
+with the modem terminating at the gateway. The Android bearer stays Wi-Fi or
+cellular packet data. The optional USB serial-modem backend remains available
+only for self-hosted setups that choose to attach a line; it is not required
+and not the default path.
+
+Reaching a legacy modem over the phone's own cellular voice call (no trunk at
+all) stays an X1 experiment, not a Beta route: cellular speech codecs corrupt
+modem waveforms at any bit rate and call-audio access needs a privileged build
+(`docs/research/CELLULAR_VOICE_CODECS_R2.md`).
+
 ## 18. Security baseline
 
 - TLS 1.3 or QUIC TLS for control/reliable byte relay.
