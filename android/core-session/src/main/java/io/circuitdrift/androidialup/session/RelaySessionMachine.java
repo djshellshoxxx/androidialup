@@ -179,6 +179,18 @@ public final class RelaySessionMachine {
     /** True once the host has requested a call (dialing or connected) and the relay has not ended it. */
     public boolean callActive(){return state == State.DIALING || state == State.CONNECTED || state == State.HANGING_UP;}
 
+    /** Immutable diagnostics view at monotonic time {@code nowMs}; contains no secrets or full IDs. */
+    public RelaySessionSnapshot snapshot(long nowMs) {
+        return new RelaySessionSnapshot(state, relayId,
+                RelaySessionSnapshot.safePrefix(callId), RelaySessionSnapshot.safePrefix(sessionId),
+                outboundSeq, inboundSeq, pending.size(), peerWindow, peerQueuedBytes,
+                advertisedWindow, inboundUnconsumed,
+                heartbeatIntervalMs, Math.max(0, nowMs - lastPeerActivityMs),
+                pingOutstanding, pingOutstanding ? Math.max(0, nowMs - pingSentAtMs) : -1,
+                terminalReason, deadline,
+                deadline == Deadline.NONE ? -1 : Math.max(0, deadlineAtMs - nowMs));
+    }
+
     /** Convenience overload using the latest time seen by the machine. */
     public List<Action> onTlsConnected() { return onTlsConnected(lastNowMs); }
 
