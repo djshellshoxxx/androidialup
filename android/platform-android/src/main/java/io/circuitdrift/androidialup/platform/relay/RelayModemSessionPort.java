@@ -8,6 +8,10 @@ import io.circuitdrift.androidialup.protocol.Messages;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * {@link SessionPort} for one {@code ModemController} that maps modem operations onto ADUP
@@ -42,9 +46,24 @@ public final class RelayModemSessionPort implements SessionPort, AutoCloseable {
         Connection open(RelayTlsTransport.Listener listener) throws RelayConnectException;
     }
 
+    /** Advisory call-progress observer (call-progress log); delivered on the modem thread. */
+    @FunctionalInterface
+    public interface ProgressObserver {
+        void onCallProgress(Messages.ProgressPhase phase, String detail);
+    }
+
+    /** Default per-call DIALING bound (S1_DIALER_GUI section 2: per_call_timeout_ms). */
+    public static final long DEFAULT_DIAL_TIMEOUT_MS = 60_000;
+    /** Internal reason recorded when the per-call timeout expires (maps to NO ANSWER). */
+    public static final String DIAL_TIMEOUT = "TIMEOUT";
+
+    private static final ScheduledExecutorService TIMERS = timers();
+
     private final TransportFactory factory;
     private final Executor modemExecutor;
     private SessionListener modem;
+    private ProgressObserver progressObserver;
+    private long dialTimeoutMs = DEFAULT_DIAL_TIMEOUT_MS;
 
     // Guarded by this.
     private long generation;
@@ -53,10 +72,30 @@ public final class RelayModemSessionPort implements SessionPort, AutoCloseable {
     private Messages.NetworkTransport bearer;
     private boolean hangingUp;
     private long retiredGeneration = -1;
+    private boolean connected;
+    private ScheduledFuture<?> dialTimer;
 
     public RelayModemSessionPort(TransportFactory factory, Executor modemExecutor) {
         this.factory = Objects.requireNonNull(factory, "factory");
         this.modemExecutor = Objects.requireNonNull(modemExecutor, "modemExecutor");
+    }
+
+    /** Sets the observer for advisory CALL_PROGRESS phases, or null. */
+    public synchronized void setProgressObserver(ProgressObserver observer) {
+        this.progressObserver = observer;
+    }
+
+    /**
+     * Bounds DIALING for the next calls: if the relay has not reported CONNECTED within
+     * {@code timeoutMs}, the call is abandoned and the modem receives {@code NO ANSWER}.
+     */
+    public synchronized void setDialTimeoutMs(long timeoutMs) {
+        if (timeoutMs < 1 || timeoutMs > 0xffff_ffffL) throw new IllegalArgumentException("timeout out of range");
+        this.dialTimeoutMs = timeoutMs;
+    }
+
+    public synchronized long dialTimeoutMs() {
+        return dialTimeoutMs;
     }
 
     /** Binds the controller (it is constructed with this port, so binding is a second step). */
@@ -74,6 +113,8 @@ public final class RelayModemSessionPort implements SessionPort, AutoCloseable {
             current = null;
             gen = ++generation;
             hangingUp = false;
+            connected = false;
+            cancelDialTimer();
         }
         if (previous != null) previous.close("LOCAL_HANGUP");
         if (target.isEmpty()) {
@@ -99,6 +140,7 @@ public final class RelayModemSessionPort implements SessionPort, AutoCloseable {
             current = connection.transport();
             pendingTarget = target;
             bearer = connection.bearer();
+            dialTimer = TIMERS.schedule(() -> onDialTimeout(gen), dialTimeoutMs, TimeUnit.MILLISECONDS);
         }
         connection.transport().start();
     }
@@ -117,6 +159,7 @@ public final class RelayModemSessionPort implements SessionPort, AutoCloseable {
         RelayTlsTransport transport;
         synchronized (this) {
             transport = current;
+            cancelDialTimer();
             // The modem already returned to COMMAND; nothing from this call may reach it again.
             generation++;
             hangingUp = true;
@@ -137,6 +180,7 @@ public final class RelayModemSessionPort implements SessionPort, AutoCloseable {
             transport = current;
             current = null;
             generation++;
+            cancelDialTimer();
         }
         if (transport != null) transport.close("DTE_DISCONNECTED");
     }
@@ -144,6 +188,36 @@ public final class RelayModemSessionPort implements SessionPort, AutoCloseable {
     /** Snapshot of the active transport, or null when idle. */
     public synchronized RelayTlsTransport.Snapshot transportSnapshot() {
         return current == null ? null : current.snapshot();
+    }
+
+    private void onDialTimeout(long gen) {
+        RelayTlsTransport transport;
+        synchronized (this) {
+            if (gen != generation || connected || current == null) return;
+            transport = current;
+            current = null;
+            retiredGeneration = gen;
+        }
+        toModem(gen, listener -> listener.onDialFailed(ResultCode.NO_ANSWER));
+        transport.close(DIAL_TIMEOUT);
+    }
+
+    /** Caller holds the lock. */
+    private void cancelDialTimer() {
+        if (dialTimer != null) {
+            dialTimer.cancel(false);
+            dialTimer = null;
+        }
+    }
+
+    private static ScheduledExecutorService timers() {
+        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, r -> {
+            Thread thread = new Thread(r, "relay-dial-timer");
+            thread.setDaemon(true);
+            return thread;
+        });
+        executor.setRemoveOnCancelPolicy(true);
+        return executor;
     }
 
     static ResultCode mapDialFailure(Messages.DialFailure reason) {
@@ -186,6 +260,7 @@ public final class RelayModemSessionPort implements SessionPort, AutoCloseable {
             if (gen != generation) return;
             transport = current;
             current = null;
+            cancelDialTimer();
             retiredGeneration = gen; // the modem already got this call's one terminal event
         }
         if (transport != null) transport.close(reason);
@@ -213,7 +288,31 @@ public final class RelayModemSessionPort implements SessionPort, AutoCloseable {
         }
 
         @Override
+        public void onCallProgress(Messages.ProgressPhase phase, String detail) {
+            ProgressObserver observer;
+            synchronized (RelayModemSessionPort.this) {
+                observer = progressObserver;
+            }
+            if (observer == null) return;
+            try {
+                modemExecutor.execute(() -> {
+                    synchronized (RelayModemSessionPort.this) {
+                        if (gen != generation) return;
+                    }
+                    observer.onCallProgress(phase, detail);
+                });
+            } catch (RejectedExecutionException modemGone) {
+                // DTE client already closed.
+            }
+        }
+
+        @Override
         public void onCallConnected(String detail) {
+            synchronized (RelayModemSessionPort.this) {
+                if (gen != generation) return;
+                connected = true;
+                cancelDialTimer();
+            }
             toModem(gen, SessionListener::onCallConnected);
         }
 
@@ -248,6 +347,7 @@ public final class RelayModemSessionPort implements SessionPort, AutoCloseable {
             synchronized (RelayModemSessionPort.this) {
                 if (gen != generation || gen == retiredGeneration) return;
                 current = null;
+                cancelDialTimer();
             }
             toModem(gen, listener -> listener.onCallTerminated(reason));
         }

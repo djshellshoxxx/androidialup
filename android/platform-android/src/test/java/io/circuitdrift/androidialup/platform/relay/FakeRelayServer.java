@@ -35,6 +35,7 @@ final class FakeRelayServer implements AutoCloseable {
     volatile boolean answerPings = true;
     volatile long heartbeatSeconds = 30;
     volatile DialFailure dialFailure;
+    volatile boolean ignoreDial;
     private final Thread acceptThread;
 
     FakeRelayServer() throws IOException {
@@ -119,6 +120,7 @@ final class FakeRelayServer implements AutoCloseable {
                         }
                         case DIAL_REQUEST -> {
                             callId = frame.callId();
+                            if (ignoreDial) break;
                             if (dialFailure != null) {
                                 send(out, new DialFailed(callId, dialFailure, false, "scripted"), callId,
                                         AduFrame.ZERO_ID, frame.requestId());
@@ -126,6 +128,7 @@ final class FakeRelayServer implements AutoCloseable {
                             }
                             send(out, new DialAccepted(callId, SESSION_ID, "gw-test", Mode.BYTE_RELAY),
                                     callId, SESSION_ID, frame.requestId());
+                            send(out, new CallProgress(ProgressPhase.ROUTING, "gw-test"), callId, SESSION_ID, 0);
                             send(out, new CallProgress(ProgressPhase.CONNECTED, "connected"), callId, SESSION_ID, 0);
                         }
                         case DATA_BYTES -> {

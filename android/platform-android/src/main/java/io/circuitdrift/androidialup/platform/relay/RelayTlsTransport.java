@@ -2,8 +2,10 @@ package io.circuitdrift.androidialup.platform.relay;
 
 import io.circuitdrift.androidialup.protocol.AduFrame;
 import io.circuitdrift.androidialup.protocol.FrameCodec;
+import io.circuitdrift.androidialup.protocol.FrameKind;
 import io.circuitdrift.androidialup.protocol.FrameStreamDecoder;
 import io.circuitdrift.androidialup.protocol.Messages;
+import io.circuitdrift.androidialup.protocol.PayloadCodec;
 import io.circuitdrift.androidialup.protocol.ProtocolException;
 import io.circuitdrift.androidialup.session.RelaySessionMachine;
 
@@ -22,6 +24,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
 /**
@@ -64,6 +67,11 @@ public final class RelayTlsTransport implements AutoCloseable {
     public interface Listener {
         /** HELLO/AUTH completed; {@link #dial} is now allowed. */
         default void onReady() {}
+        /**
+         * Advisory CALL_PROGRESS phase (ROUTING..CONNECTED) accepted by the session machine,
+         * for the call-progress log (S1_DIALER_GUI section 5). Never drives modem state.
+         */
+        default void onCallProgress(Messages.ProgressPhase phase, String detail) {}
         default void onCallConnected(String detail) {}
         default void onRemoteData(byte[] data) {}
         default void onDialFailed(Messages.DialFailure reason, String detail) {}
@@ -101,6 +109,7 @@ public final class RelayTlsTransport implements AutoCloseable {
     private final Listener listener;
     private final LongSupplier clockMs;
     private final Config config;
+    private final Consumer<AduFrame> inboundObserver;
     private final ScheduledExecutorService owner;
     private final BlockingQueue<AduFrame> writeQueue;
     private final Object socketLock = new Object();
@@ -129,6 +138,17 @@ public final class RelayTlsTransport implements AutoCloseable {
      */
     public RelayTlsTransport(RelaySessionMachine machine, Connector connector, Listener listener,
                              LongSupplier clockMs, Config config) {
+        this(machine, connector, listener, clockMs, config, null);
+    }
+
+    /**
+     * As above, plus {@code inboundObserver}, called on the owner thread with every decoded
+     * inbound frame just before the machine sees it (e.g. {@link DeviceCredentialAuth}, which
+     * needs the HELLO_ACK relay_id). May be null.
+     */
+    public RelayTlsTransport(RelaySessionMachine machine, Connector connector, Listener listener,
+                             LongSupplier clockMs, Config config, Consumer<AduFrame> inboundObserver) {
+        this.inboundObserver = inboundObserver;
         this.machine = Objects.requireNonNull(machine, "machine");
         this.connector = Objects.requireNonNull(connector, "connector");
         this.listener = Objects.requireNonNull(listener, "listener");
@@ -322,9 +342,21 @@ public final class RelayTlsTransport implements AutoCloseable {
     private void onFrame(AduFrame frame) {
         if (closed) return;
         framesReceived++;
+        if (inboundObserver != null) {
+            try {
+                inboundObserver.accept(frame);
+            } catch (RuntimeException failure) {
+                fail(INTERNAL_ERROR);
+                return;
+            }
+        }
         RelaySessionMachine.State before = machine.state();
         runMachine(() -> machine.onFrame(frame, clockMs.getAsLong()));
         if (closed) return;
+        if (frame.kind() == FrameKind.CALL_PROGRESS) {
+            Messages.CallProgress progress = (Messages.CallProgress) PayloadCodec.decode(frame.kind(), frame.payload());
+            listener.onCallProgress(progress.phase(), progress.detail());
+        }
         RelaySessionMachine.State after = machine.state();
         if (after == RelaySessionMachine.State.FAILED) {
             fail(before == RelaySessionMachine.State.AUTH_RESPONSE_SENT ? AUTH_FAILURE : PROTOCOL_VIOLATION);

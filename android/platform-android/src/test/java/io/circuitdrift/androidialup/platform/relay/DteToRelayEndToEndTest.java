@@ -34,6 +34,8 @@ public class DteToRelayEndToEndTest {
     private FakeRelayServer relay;
     private TcpDteServer server;
     private volatile boolean noNetwork;
+    private volatile long dialTimeoutMs = RelayModemSessionPort.DEFAULT_DIAL_TIMEOUT_MS;
+    private final java.util.List<Messages.ProgressPhase> progress = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     @Before
     public void setUp() throws IOException {
@@ -49,6 +51,8 @@ public class DteToRelayEndToEndTest {
                         () -> System.nanoTime() / 1_000_000, RelayTlsTransport.Config.DEFAULT);
                 return new RelayModemSessionPort.Connection(transport, Messages.NetworkTransport.WIFI);
             }, client.modemExecutor());
+            port.setDialTimeoutMs(dialTimeoutMs);
+            port.setProgressObserver((phase, detail) -> progress.add(phase));
             ModemController controller = new ModemController(port, client.writer(), "e2e");
             port.bind(controller);
             client.addCloseHook(port::close);
@@ -160,6 +164,34 @@ public class DteToRelayEndToEndTest {
             relay.dropConnections();
             String out = readUntil(dte, ResultCode.NO_CARRIER.text() + "\r\n");
             assertTrue(out, out.contains("+ADIAG: NETWORK_LOST\r\n"));
+        }
+    }
+
+    @Test
+    public void callProgressPhasesReachTheObserverInOrder() throws Exception {
+        try (Socket dte = connect()) {
+            send(dte, "ATE0\rATDloopback\r");
+            readUntil(dte, "CONNECT\r\n");
+            long deadline = System.currentTimeMillis() + 2000;
+            while (progress.size() < 2 && System.currentTimeMillis() < deadline) Thread.sleep(10);
+            org.junit.Assert.assertEquals(
+                    java.util.List.of(Messages.ProgressPhase.ROUTING, Messages.ProgressPhase.CONNECTED), progress);
+        }
+    }
+
+    @Test
+    public void perCallTimeoutYieldsNoAnswer() throws Exception {
+        relay.ignoreDial = true;
+        dialTimeoutMs = 300;
+        try (Socket dte = connect()) {
+            send(dte, "ATE0\r");
+            readUntil(dte, "OK\r\n");
+            long start = System.currentTimeMillis();
+            send(dte, "ATD5551212\r");
+            readUntil(dte, "NO ANSWER\r\n");
+            assertTrue(System.currentTimeMillis() - start >= 250);
+            send(dte, "AT\r");
+            readUntil(dte, "OK\r\n");
         }
     }
 
