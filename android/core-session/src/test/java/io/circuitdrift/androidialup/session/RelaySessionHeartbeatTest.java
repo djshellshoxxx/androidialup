@@ -16,7 +16,7 @@ class RelaySessionHeartbeatTest {
     void setUp() {
         byte[] call = new byte[16];
         call[0] = 1;
-        machine = new RelaySessionMachine(endpoint, challenge -> new byte[]{1}, () -> call.clone());
+        machine = new RelaySessionMachine(endpoint, (relayId, endpointId, challenge) -> new byte[]{1}, () -> call.clone());
     }
 
     private AduFrame frame(FrameKind kind, Message message, long requestId) {
@@ -105,7 +105,11 @@ class RelaySessionHeartbeatTest {
     @Test
     void noPingBeforeAuthentication() {
         machine.onTlsConnected(0);
-        assertTrue(machine.onTimer(60_000).isEmpty());
+        assertTrue(machine.onTimer(7_999).isEmpty());
+        // Only the S1 section 7 authentication deadline may fire before AUTH_OK, never a PING.
+        List<RelaySessionMachine.Action> actions = machine.onTimer(60_000);
+        assertEquals(1, actions.size());
+        assertInstanceOf(RelaySessionMachine.TransportFailed.class, actions.get(0));
     }
 
     @Test
