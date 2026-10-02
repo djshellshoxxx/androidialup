@@ -1,0 +1,2 @@
+rootProject.name = 'androidialup-android'
+include 'core-network'
