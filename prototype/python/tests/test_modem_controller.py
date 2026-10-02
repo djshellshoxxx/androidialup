@@ -32,6 +32,12 @@ class ModemControllerTests(unittest.TestCase):
         # Echo behavior is covered at the AT/profile layer; reducer tests focus on state/results.
         self.controller.engine.profile.echo = False
 
+    def connect(self):
+        self.controller.feed_dte(b"ATDloopback\r", 0)
+        self.controller.on_dial_result(ResultCode.CONNECT)
+        self.out.clear()
+        self.port.writes.clear()
+
     def test_at_dial_connect_and_binary_data(self):
         self.controller.feed_dte(b"AT\r", 0)
         self.assertIn(b"OK\r\n", self.out)
@@ -52,6 +58,13 @@ class ModemControllerTests(unittest.TestCase):
         self.controller.feed_dte(payload, 100)
         self.assertEqual(b"".join(self.port.writes), payload)
         self.assertEqual(self.out, [])
+
+    def test_large_online_read_is_forwarded_in_bounded_chunks_not_per_byte(self):
+        self.connect()
+        payload = (bytes(range(256)) * 256)  # 64 KiB, representative TCP read.
+        self.controller.feed_dte(payload, 100)
+        self.assertEqual(b"".join(self.port.writes), payload)
+        self.assertLessEqual(len(self.port.writes), 4)
 
     def test_failed_dial_maps_to_terminal_result_once(self):
         self.controller.feed_dte(b"ATDloopback\r", 0)
