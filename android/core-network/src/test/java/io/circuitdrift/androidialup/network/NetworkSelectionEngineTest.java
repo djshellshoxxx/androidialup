@@ -86,11 +86,11 @@ class NetworkSelectionEngineTest {
     @Test
     void deterministicTieBreakPrefersWifiThenCellularThenLexicalId() {
         var engine = new NetworkSelectionEngine();
-        var other = c("a", NetworkTransport.OTHER, 10);
-        var cell = c("z", NetworkTransport.CELLULAR, 10);
-        var wifiB = c("b", NetworkTransport.WIFI, 10);
-        var wifiA = c("a", NetworkTransport.WIFI, 10);
-        assertEquals("a", engine.select(List.of(other, cell, wifiB, wifiA), NetworkPolicy.AUTOMATIC, null, false, false).selectedId());
+        var other = c("other-a", NetworkTransport.OTHER, 10);
+        var cell = c("cell-z", NetworkTransport.CELLULAR, 10);
+        var wifiB = c("wifi-b", NetworkTransport.WIFI, 10);
+        var wifiA = c("wifi-a", NetworkTransport.WIFI, 10);
+        assertEquals("wifi-a", engine.select(List.of(other, cell, wifiB, wifiA), NetworkPolicy.AUTOMATIC, null, false, false).selectedId());
     }
 
     @Test
