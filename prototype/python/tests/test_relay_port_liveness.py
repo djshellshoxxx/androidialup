@@ -178,6 +178,18 @@ class RelayPortLivenessTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_for(lambda: self.server.close_records)
         self.assertEqual(self.server.close_records[0].reason, "NETWORK_LOST")
 
+    async def test_ping_into_full_transmit_queue_is_queue_overflow(self):
+        address = await self.start_relay()
+        port = self.make_port(address, heartbeat_interval=0.05)
+        await port.start()
+        port._tx_task.cancel()  # stalled writer: nothing drains the bounded queue
+        with self.assertRaises(asyncio.CancelledError):
+            await port._tx_task
+        while not port._tx_queue.full():
+            port._tx_queue.put_nowait(None)
+        await self.wait_for(lambda: port.link_failure is not None)
+        self.assertEqual(port.link_failure, LinkFailure("QUEUE_OVERFLOW", "RELAY_TX_QUEUE"))
+
     async def test_wrong_nonce_pong_is_protocol_violation(self):
         address = await self.start_relay(session_cls=WrongNoncePongSession)
         port = self.make_port(address, heartbeat_interval=0.05)

@@ -327,12 +327,17 @@ class RelaySessionPort:
                 return
             if action.kind == "PING":
                 self.heartbeat_stats["pings_sent"] += 1
-                self._enqueue(
-                    Frame(
-                        kind=FrameKind.PING,
-                        payload=encode_payload(Ping(action.nonce, int(now * 1000) & 0xFFFFFFFFFFFFFFFF)),
+                try:
+                    self._enqueue(
+                        Frame(
+                            kind=FrameKind.PING,
+                            payload=encode_payload(Ping(action.nonce, int(now * 1000) & 0xFFFFFFFFFFFFFFFF)),
+                        )
                     )
-                )
+                except BufferError:
+                    # S1_SPEC_FREEZE section 6: control queue overflow is fatal.
+                    self._link_failed(LinkFailure("QUEUE_OVERFLOW", "RELAY_TX_QUEUE"))
+                    return
 
     def _enqueue(self, frame: Frame) -> None:
         if self.connection is None or self._closed:
