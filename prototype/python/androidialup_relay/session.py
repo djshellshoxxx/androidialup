@@ -1,0 +1,255 @@
+from __future__ import annotations
+
+from enum import Enum
+import secrets
+from typing import Callable
+
+from androidialup_gateway.backend import BackendEventType
+from androidialup_gateway.loopback import LoopbackBackend
+from androidialup_protocol.byte_relay import DEFAULT_RECEIVE_WINDOW, ByteRelayReceiver, ByteRelaySender, FlowControlBlocked
+from androidialup_protocol.frame import Frame, FrameKind, ProtocolError, ZERO_ID
+from androidialup_protocol.messages import (
+    AuthBegin,
+    AuthChallenge,
+    AuthFail,
+    AuthOk,
+    AuthResponse,
+    CallProgress,
+    CallTerminated,
+    DataBytes,
+    DialAccepted,
+    DialFailed,
+    DialFailure,
+    DialRequest,
+    FlowStatus,
+    HangupAck,
+    HangupRequest,
+    Hello,
+    HelloAck,
+    Mode,
+    Ping,
+    Pong,
+    ProgressPhase,
+    TerminationSource,
+    decode_payload,
+    encode_payload,
+    kind_for_message,
+)
+
+
+class RelaySessionState(str, Enum):
+    NEW = "NEW"
+    HELLO_DONE = "HELLO_DONE"
+    AUTH_CHALLENGE_SENT = "AUTH_CHALLENGE_SENT"
+    AUTHENTICATED = "AUTHENTICATED"
+    DIALING = "DIALING"
+    CONNECTED = "CONNECTED"
+    FAILED = "FAILED"
+
+
+class RelaySession:
+    def __init__(
+        self,
+        *,
+        backend: LoopbackBackend | None = None,
+        relay_id: str = "relay-prototype",
+        gateway_id: str = "gw-loopback",
+        challenge_nonce: bytes = b"androidialup-test-nonce",
+        auth_validator: Callable[[bytes], bool] | None = None,
+        session_id_factory: Callable[[], bytes] | None = None,
+    ) -> None:
+        self.state = RelaySessionState.NEW
+        self.backend = backend or LoopbackBackend()
+        self.relay_id = relay_id
+        self.gateway_id = gateway_id
+        self.challenge_nonce = bytes(challenge_nonce)
+        self.auth_validator = auth_validator or (lambda proof: proof == b"test-proof")
+        self.session_id_factory = session_id_factory or (lambda: secrets.token_bytes(16))
+        self.endpoint_id: bytes | None = None
+        self.call_id = ZERO_ID
+        self.session_id = ZERO_ID
+        self.selected_mode = Mode.BYTE_RELAY
+        self._inbound = ByteRelayReceiver()
+        self._outbound = ByteRelaySender()
+        self._dial_accepted_frame: Frame | None = None
+        self._terminal_sent = False
+
+    def _frame(self, message, *, request_id: int = 0, call_id: bytes | None = None, session_id: bytes | None = None) -> Frame:
+        return Frame(
+            kind=kind_for_message(message),
+            call_id=self.call_id if call_id is None else call_id,
+            session_id=self.session_id if session_id is None else session_id,
+            request_id=request_id,
+            payload=encode_payload(message),
+        )
+
+    def _require_ids(self, frame: Frame) -> None:
+        if frame.call_id != self.call_id:
+            raise ProtocolError("call_id does not match active call")
+        if frame.session_id != self.session_id:
+            raise ProtocolError("session_id does not match active call")
+
+    def handle_frame(self, frame: Frame) -> list[Frame]:
+        if frame.kind == FrameKind.PING and self.state != RelaySessionState.NEW:
+            ping = decode_payload(frame.kind, frame.payload)
+            return [self._frame(Pong(ping.nonce), request_id=frame.request_id, call_id=frame.call_id, session_id=frame.session_id)]
+
+        if self.state == RelaySessionState.NEW:
+            if frame.kind != FrameKind.HELLO:
+                raise ProtocolError("HELLO required before other application frames")
+            hello = decode_payload(frame.kind, frame.payload)
+            if not isinstance(hello, Hello):
+                raise ProtocolError("invalid HELLO")
+            if not (hello.protocol_min <= 1 <= hello.protocol_max):
+                raise ProtocolError("protocol version 1 not offered")
+            self.endpoint_id = hello.endpoint_id
+            self.state = RelaySessionState.HELLO_DONE
+            return [
+                self._frame(
+                    HelloAck(1, self.relay_id, 1024 * 1024, 10, ("BYTE_RELAY",)),
+                    request_id=frame.request_id,
+                    call_id=ZERO_ID,
+                    session_id=ZERO_ID,
+                )
+            ]
+
+        if self.state == RelaySessionState.HELLO_DONE:
+            if frame.kind != FrameKind.AUTH_BEGIN:
+                raise ProtocolError("AUTH_BEGIN required after HELLO_ACK")
+            decode_payload(frame.kind, frame.payload)
+            self.state = RelaySessionState.AUTH_CHALLENGE_SENT
+            return [
+                self._frame(
+                    AuthChallenge(self.challenge_nonce, "device-credential"),
+                    request_id=frame.request_id,
+                    call_id=ZERO_ID,
+                    session_id=ZERO_ID,
+                )
+            ]
+
+        if self.state == RelaySessionState.AUTH_CHALLENGE_SENT:
+            if frame.kind != FrameKind.AUTH_RESPONSE:
+                raise ProtocolError("AUTH_RESPONSE required after AUTH_CHALLENGE")
+            response = decode_payload(frame.kind, frame.payload)
+            if not isinstance(response, AuthResponse):
+                raise ProtocolError("invalid AUTH_RESPONSE")
+            if not self.auth_validator(response.proof):
+                self.state = RelaySessionState.FAILED
+                return [self._frame(AuthFail("authentication failed"), request_id=frame.request_id, call_id=ZERO_ID, session_id=ZERO_ID)]
+            self.state = RelaySessionState.AUTHENTICATED
+            assert self.endpoint_id is not None
+            return [
+                self._frame(
+                    AuthOk(self.endpoint_id, (("dial", "allowed"),)),
+                    request_id=frame.request_id,
+                    call_id=ZERO_ID,
+                    session_id=ZERO_ID,
+                )
+            ]
+
+        if self.state == RelaySessionState.AUTHENTICATED:
+            if frame.kind != FrameKind.DIAL_REQUEST:
+                raise ProtocolError("DIAL_REQUEST required while authenticated and idle")
+            if frame.call_id == ZERO_ID:
+                raise ProtocolError("DIAL_REQUEST requires nonzero call_id")
+            if frame.session_id != ZERO_ID:
+                raise ProtocolError("DIAL_REQUEST session_id must be zero before assignment")
+            request = decode_payload(frame.kind, frame.payload)
+            if not isinstance(request, DialRequest):
+                raise ProtocolError("invalid DIAL_REQUEST")
+            if request.requested_mode != Mode.BYTE_RELAY:
+                return [
+                    self._frame(
+                        DialFailed(frame.call_id, DialFailure.UNSUPPORTED_MODE, False, "prototype supports BYTE_RELAY only"),
+                        request_id=frame.request_id,
+                        call_id=frame.call_id,
+                        session_id=ZERO_ID,
+                    )
+                ]
+            self.call_id = frame.call_id
+            self.session_id = self.session_id_factory()
+            if len(self.session_id) != 16 or self.session_id == ZERO_ID:
+                raise RuntimeError("session_id_factory must return nonzero 16-byte IDs")
+            self._inbound = ByteRelayReceiver()
+            self._outbound = ByteRelaySender()
+            self._terminal_sent = False
+            self.backend.open()
+            self.backend.dial(request.target, {"dial_timeout_ms": request.dial_timeout_ms})
+            self.state = RelaySessionState.DIALING
+            accepted = self._frame(
+                DialAccepted(self.call_id, self.session_id, self.gateway_id, Mode.BYTE_RELAY),
+                request_id=frame.request_id,
+            )
+            self._dial_accepted_frame = accepted
+            return [accepted, *self.poll()]
+
+        if self.state in {RelaySessionState.DIALING, RelaySessionState.CONNECTED}:
+            self._require_ids(frame)
+            if frame.kind == FrameKind.DIAL_REQUEST:
+                if self._dial_accepted_frame is not None:
+                    return [self._dial_accepted_frame]
+                raise ProtocolError("duplicate dial has no prior status")
+            if frame.kind == FrameKind.FLOW_STATUS:
+                status = decode_payload(frame.kind, frame.payload)
+                self._outbound.update_flow(status)
+                return []
+            if frame.kind == FrameKind.HANGUP_REQUEST:
+                decode_payload(frame.kind, frame.payload)
+                ack = self._frame(HangupAck(), request_id=frame.request_id)
+                self.backend.hangup("LOCAL_HANGUP")
+                return [ack, *self.poll()]
+            if frame.kind == FrameKind.DATA_BYTES:
+                if self.state != RelaySessionState.CONNECTED:
+                    raise ProtocolError("DATA_BYTES not allowed before CONNECTED")
+                message = decode_payload(frame.kind, frame.payload)
+                data = self._inbound.accept(message)
+                self.backend.write(data)
+                out = self.poll()
+                out.append(self._frame(FlowStatus(DEFAULT_RECEIVE_WINDOW, 0)))
+                return out
+            raise ProtocolError(f"frame kind {frame.kind.name} not allowed in active call")
+
+        if self.state == RelaySessionState.FAILED:
+            raise ProtocolError("session is failed")
+        raise ProtocolError(f"unhandled relay state {self.state}")
+
+    def poll(self) -> list[Frame]:
+        out: list[Frame] = []
+        for event in self.backend.poll_events():
+            if event.type == BackendEventType.PROGRESS:
+                out.append(self._frame(CallProgress(ProgressPhase.DIALING, event.detail)))
+            elif event.type == BackendEventType.CONNECTED:
+                self.state = RelaySessionState.CONNECTED
+                out.append(self._frame(CallProgress(ProgressPhase.CONNECTED, event.detail)))
+                out.append(self._frame(FlowStatus(DEFAULT_RECEIVE_WINDOW, 0)))
+            elif event.type == BackendEventType.DATA:
+                try:
+                    messages = self._outbound.build(event.data)
+                except FlowControlBlocked as exc:
+                    raise ProtocolError("peer flow window exhausted") from exc
+                out.extend(self._frame(message) for message in messages)
+            elif event.type == BackendEventType.FAILED:
+                mapping = {
+                    "BUSY": DialFailure.BUSY,
+                    "NO_ANSWER": DialFailure.NO_ANSWER,
+                    "NO_DIALTONE": DialFailure.NO_DIALTONE,
+                }
+                reason = mapping.get(event.detail or "", DialFailure.INTERNAL_ERROR)
+                out.append(self._frame(DialFailed(self.call_id, reason, False, event.detail)))
+                self._reset_call()
+            elif event.type == BackendEventType.HANGUP:
+                if not self._terminal_sent:
+                    out.append(self._frame(CallTerminated(event.detail or "REMOTE_HANGUP", TerminationSource.GATEWAY, None)))
+                    self._terminal_sent = True
+                self._reset_call(keep_terminal=True)
+        return out
+
+    def _reset_call(self, *, keep_terminal: bool = False) -> None:
+        self.state = RelaySessionState.AUTHENTICATED
+        self.call_id = ZERO_ID
+        self.session_id = ZERO_ID
+        self._inbound = ByteRelayReceiver()
+        self._outbound = ByteRelaySender()
+        self._dial_accepted_frame = None
+        if not keep_terminal:
+            self._terminal_sent = False
