@@ -181,6 +181,8 @@ class RelayLivenessTests(unittest.IsolatedAsyncioTestCase):
         await connection.close()
 
     async def test_client_traffic_defers_relay_ping(self):
+        # Wider interval so scheduler jitter under load cannot open a 50 ms gap.
+        self.server.timeouts = TimeoutConfig(heartbeat_interval=0.3, heartbeat_failure=0.3, relay_auth=2.0)
         connection = await self.open_client()
         await self.authenticate(connection)
         session_id = await self.dial(connection)
@@ -191,7 +193,7 @@ class RelayLivenessTests(unittest.IsolatedAsyncioTestCase):
             seq += 1
             kinds.append((await connection.recv_frame()).kind)  # echoed DATA_BYTES
             kinds.append((await connection.recv_frame()).kind)  # FLOW_STATUS
-            await asyncio.sleep(self.timeouts.heartbeat_interval / 3)
+            await asyncio.sleep(0.03)
         self.assertNotIn(FrameKind.PING, kinds)
         await connection.close()
 
