@@ -59,9 +59,15 @@ public final class RelaySessionMachine {
     @FunctionalInterface
     public interface AuthProofProvider { byte[] proofFor(String relayId, byte[] endpointId, AuthChallenge challenge); }
 
-    /** Configurable protocol timing (S1 section 7 says values are configurable). */
-    public record Options(long authDeadlineMs, long dialAckDeadlineMs, long dialSetupDeadlineMs) {
-        public static final Options DEFAULTS = new Options(AUTH_DEADLINE_MS, DIAL_ACK_DEADLINE_MS, DIAL_SETUP_DEADLINE_MS);
+    /**
+     * Configurable protocol timing (S1 section 7 says values are configurable) and receive-side
+     * accounting. With {@code manualInboundConsumption=false} (default, Python reference
+     * behaviour) every {@link InboundData} counts as consumed when emitted, so FLOW_STATUS
+     * always advertises the full window. With {@code true} the host reports consumption through
+     * {@link #onInboundConsumed(long)} and FLOW_STATUS advertises the remaining buffer.
+     */
+    public record Options(long authDeadlineMs, long dialAckDeadlineMs, long dialSetupDeadlineMs, boolean manualInboundConsumption) {
+        public static final Options DEFAULTS = new Options(AUTH_DEADLINE_MS, DIAL_ACK_DEADLINE_MS, DIAL_SETUP_DEADLINE_MS, false);
         public Options {
             if (authDeadlineMs <= 0 || dialAckDeadlineMs <= 0 || dialSetupDeadlineMs <= 0) {
                 throw new IllegalArgumentException("deadlines must be positive");
@@ -69,7 +75,10 @@ public final class RelaySessionMachine {
             if (dialSetupDeadlineMs > 0xffff_ffffL) throw new IllegalArgumentException("dialSetupDeadlineMs must fit u32");
         }
         public Options withDeadlines(long authMs, long dialAckMs, long dialSetupMs) {
-            return new Options(authMs, dialAckMs, dialSetupMs);
+            return new Options(authMs, dialAckMs, dialSetupMs, manualInboundConsumption);
+        }
+        public Options withManualInboundConsumption(boolean manual) {
+            return new Options(authDeadlineMs, dialAckDeadlineMs, dialSetupDeadlineMs, manual);
         }
     }
 
@@ -110,6 +119,9 @@ public final class RelaySessionMachine {
     private long outboundSeq;
     private long inboundSeq;
     private long peerWindow = DEFAULT_RECEIVE_WINDOW;
+    private long peerQueuedBytes;
+    private long inboundUnconsumed;
+    private long advertisedWindow = DEFAULT_RECEIVE_WINDOW;
     private final ByteArrayOutputStream pending = new ByteArrayOutputStream();
 
     private long lastNowMs;
@@ -148,6 +160,12 @@ public final class RelaySessionMachine {
     public long outboundSeq(){return outboundSeq;}
     public long inboundSeq(){return inboundSeq;}
     public long peerWindow(){return peerWindow;}
+    /** queued_bytes from the peer's latest FLOW_STATUS (diagnostic only, as in Python). */
+    public long peerQueuedBytes(){return peerQueuedBytes;}
+    /** Inbound bytes emitted as {@link InboundData} but not yet reported consumed. */
+    public long inboundUnconsumedBytes(){return inboundUnconsumed;}
+    /** receive_window_bytes of the last FLOW_STATUS this machine sent (initially 256 KiB). */
+    public long advertisedReceiveWindow(){return advertisedWindow;}
     public boolean heartbeatOutstanding(){return pingOutstanding;}
     public long lastPeerActivityMs(){return lastPeerActivityMs;}
     public long heartbeatIntervalMs(){return heartbeatIntervalMs;}
@@ -195,13 +213,15 @@ public final class RelaySessionMachine {
     public List<Action> writeData(byte[] data) {
         requireState(State.CONNECTED, "writeData");
         if (data == null || data.length == 0) return List.of();
-        if ((long) pending.size() + data.length > MAX_LOCAL_PENDING) throw new IllegalStateException("BYTE_RELAY local pending limit exceeded");
+        // S1_SPEC_FREEZE section 6: BYTE_RELAY queue overflow terminates the call, never drops bytes.
+        if ((long) pending.size() + data.length > MAX_LOCAL_PENDING) return terminateCall(QUEUE_OVERFLOW);
         pending.writeBytes(data);
         return drainPending();
     }
 
+    /** Sends as much pending data as the peer window allows; only while CONNECTED. */
     public List<Action> drainPending() {
-        if (state != State.CONNECTED && state != State.HANGING_UP) return List.of();
+        if (state != State.CONNECTED) return List.of();
         List<Action> actions = new ArrayList<>();
         while (pending.size() > 0 && peerWindow > 0) {
             byte[] all = pending.toByteArray();
@@ -214,6 +234,21 @@ public final class RelaySessionMachine {
             peerWindow -= take;
         }
         return List.copyOf(actions);
+    }
+
+    /**
+     * Reports that the host delivered {@code bytes} of previously emitted {@link InboundData}
+     * (only meaningful with {@link Options#manualInboundConsumption()}). Re-advertises the window
+     * with FLOW_STATUS when it reopens from zero or grew by at least one DATA_BYTES payload.
+     */
+    public List<Action> onInboundConsumed(long bytes) {
+        if (bytes < 0 || bytes > inboundUnconsumed) throw new IllegalArgumentException("consumed bytes exceed unconsumed inbound bytes");
+        inboundUnconsumed -= bytes;
+        if (state != State.CONNECTED) return List.of();
+        long window = DEFAULT_RECEIVE_WINDOW - inboundUnconsumed;
+        boolean reopened = advertisedWindow == 0 && window > 0;
+        if (!reopened && window - advertisedWindow < MAX_DATA_BYTES) return List.of();
+        return List.of(flowStatus());
     }
 
     /**
@@ -416,14 +451,30 @@ public final class RelaySessionMachine {
             return List.of();
         }
         if (frame.kind() == FrameKind.FLOW_STATUS) {
-            FlowStatus flow=(FlowStatus)PayloadCodec.decode(frame.kind(), frame.payload()); peerWindow=flow.receiveWindowBytes(); return drainPending();
+            // Absolute credit, as in the Python ByteRelaySender.update_flow: replaces the window.
+            FlowStatus flow=(FlowStatus)PayloadCodec.decode(frame.kind(), frame.payload());
+            peerWindow=flow.receiveWindowBytes(); peerQueuedBytes=flow.queuedBytes();
+            return drainPending();
         }
         if (frame.kind() == FrameKind.DATA_BYTES) {
-            if(state!=State.CONNECTED)throw new ProtocolException("DATA_BYTES not allowed before CONNECTED");
+            if(state==State.DIALING)throw new ProtocolException("DATA_BYTES not allowed before CONNECTED");
             DataBytes data=(DataBytes)PayloadCodec.decode(frame.kind(), frame.payload());
-            if(data.streamSeq()!=inboundSeq)throw new ProtocolException("BYTE_RELAY sequence mismatch: expected "+Long.toUnsignedString(inboundSeq)+", got "+Long.toUnsignedString(data.streamSeq()));
-            inboundSeq += data.data().length;
-            return List.of(new InboundData(data.data()), outbound(new FlowStatus(DEFAULT_RECEIVE_WINDOW,0),0,callId,sessionId));
+            if(data.streamSeq()!=inboundSeq){
+                String relation = Long.compareUnsigned(data.streamSeq(), inboundSeq) > 0 ? "gap" : "duplicate/overlap";
+                throw new ProtocolException("BYTE_RELAY sequence "+relation+": expected "+Long.toUnsignedString(inboundSeq)+", got "+Long.toUnsignedString(data.streamSeq()));
+            }
+            byte[] bytes = data.data();
+            inboundSeq += bytes.length;
+            // Bytes in flight when we sent HANGUP_REQUEST are validated, then discarded.
+            if(state==State.HANGING_UP)return List.of();
+            if(inboundUnconsumed + bytes.length > DEFAULT_RECEIVE_WINDOW)return terminateCall(QUEUE_OVERFLOW);
+            if(options.manualInboundConsumption())inboundUnconsumed += bytes.length;
+            return List.of(new InboundData(bytes), flowStatus());
+        }
+        if (frame.kind() == FrameKind.HANGUP_REQUEST) {
+            PayloadCodec.decode(frame.kind(), frame.payload());
+            state = State.HANGING_UP; pending.reset(); disarm();
+            return List.of(outbound(new HangupAck(), frame.requestId(), callId, sessionId));
         }
         if (frame.kind() == FrameKind.HANGUP_ACK) {
             if (state != State.HANGING_UP) throw new ProtocolException("HANGUP_ACK without HANGUP_REQUEST");
@@ -455,10 +506,26 @@ public final class RelaySessionMachine {
         };
     }
 
+    private Outbound flowStatus() {
+        advertisedWindow = DEFAULT_RECEIVE_WINDOW - inboundUnconsumed;
+        return outbound(new FlowStatus(advertisedWindow, inboundUnconsumed), 0, callId, sessionId);
+    }
+
+    /** Ends the call locally for {@code reason}: HANGUP_REQUEST plus the single terminal action. */
+    private List<Action> terminateCall(String reason) {
+        boolean report = !callTerminalReported;
+        callTerminalReported = true;
+        Outbound hangup = sendHangup(reason);
+        if (!report) return List.of(hangup);
+        terminalReason = reason;
+        return List.of(hangup, new CallTerminatedAction(reason));
+    }
+
     private Outbound sendHangup(String reason) {
         long request = takeRequestId();
         hangupRequestId = request;
         state = State.HANGING_UP;
+        pending.reset();
         disarm();
         return outbound(new HangupRequest(reason), request, callId, sessionId);
     }
@@ -484,6 +551,6 @@ public final class RelaySessionMachine {
     private void requireActiveIds(AduFrame frame){requireCall(frame,callId);if(isZero(sessionId)||!Arrays.equals(frame.sessionId(),sessionId))throw new ProtocolException("session_id mismatch");}
     private void requireState(State expected,String action){if(state!=expected)throw new IllegalStateException(action+" not allowed in "+state);}
     private static boolean isZero(byte[] value){for(byte b:value)if(b!=0)return false;return true;}
-    private void resetByteRelay(){outboundSeq=0;inboundSeq=0;peerWindow=DEFAULT_RECEIVE_WINDOW;pending.reset();}
+    private void resetByteRelay(){outboundSeq=0;inboundSeq=0;peerWindow=DEFAULT_RECEIVE_WINDOW;peerQueuedBytes=0;inboundUnconsumed=0;advertisedWindow=DEFAULT_RECEIVE_WINDOW;pending.reset();}
     private void resetCall(){state=State.IDLE;callId=AduFrame.ZERO_ID.clone();sessionId=AduFrame.ZERO_ID.clone();expectedRequestId=0;hangupRequestId=0;cancelOnAccept=false;cancelReason=null;disarm();resetByteRelay();}
 }
