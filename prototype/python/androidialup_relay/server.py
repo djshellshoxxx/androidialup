@@ -7,7 +7,8 @@ from collections.abc import Callable
 from androidialup_protocol.async_connection import AsyncFramedConnection, ConnectionClosed
 from androidialup_protocol.frame import ProtocolError
 
-from .session import RelaySession
+from .auth import ChallengeResponseAuthenticator, DeviceCredentialStore, InMemoryDeviceCredentialStore
+from .session import RelaySession, RelaySessionState
 
 
 class RelayTcpServer:
@@ -18,11 +19,18 @@ class RelayTcpServer:
         ssl_context: ssl.SSLContext,
         *,
         session_factory: Callable[[], RelaySession] | None = None,
+        credential_store: DeviceCredentialStore | None = None,
     ) -> None:
+        if session_factory is not None and credential_store is not None:
+            raise ValueError("pass either session_factory or credential_store, not both")
         self.host = host
         self.port = port
         self.ssl_context = ssl_context
-        self.session_factory = session_factory or RelaySession
+        if session_factory is None:
+            # One authenticator (and therefore one pending nonce) per client session.
+            store = credential_store if credential_store is not None else InMemoryDeviceCredentialStore()
+            session_factory = lambda: RelaySession(authenticator=ChallengeResponseAuthenticator(store))  # noqa: E731
+        self.session_factory = session_factory
         self._server: asyncio.AbstractServer | None = None
         self._client_tasks: set[asyncio.Task] = set()
 
@@ -70,6 +78,10 @@ class RelayTcpServer:
                     await connection.send_frame(response)
                 for response in session.poll():
                     await connection.send_frame(response)
+                if session.state == RelaySessionState.FAILED:
+                    # AUTH_FAIL (or any terminal failure) has been flushed by
+                    # send_frame's drain; close without waiting for more input.
+                    break
         except (ConnectionClosed, ProtocolError, ConnectionError, ssl.SSLError, asyncio.IncompleteReadError):
             pass
         finally:

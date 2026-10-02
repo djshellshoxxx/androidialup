@@ -10,6 +10,7 @@ from androidialup_protocol.byte_relay import ByteRelayReceiver, ByteRelaySender
 from androidialup_protocol.frame import Frame, FrameKind, ProtocolError, ZERO_ID
 from androidialup_protocol.messages import (
     AuthBegin,
+    AuthChallenge,
     AuthFail,
     AuthResponse,
     CallProgress,
@@ -22,6 +23,7 @@ from androidialup_protocol.messages import (
     FlowStatus,
     HangupRequest,
     Hello,
+    HelloAck,
     Mode,
     NetworkTransport,
     ProgressPhase,
@@ -29,6 +31,7 @@ from androidialup_protocol.messages import (
     encode_payload,
     kind_for_message,
 )
+from androidialup_relay.auth import DEVICE_HMAC_SHA256_V1, MIN_NONCE_LENGTH, compute_proof
 
 from .at_engine import ResultCode
 
@@ -37,6 +40,10 @@ class ControllerCallbacks(Protocol):
     def on_dial_result(self, result: ResultCode) -> None: ...
     def on_remote_data(self, data: bytes) -> None: ...
     def on_remote_hangup(self, reason: str = "REMOTE_HANGUP") -> None: ...
+
+
+class RelayAuthenticationError(Exception):
+    """The relay answered AUTH_FAIL (maps to the AUTH_FAILURE error class)."""
 
 
 class RelaySessionPort:
@@ -50,16 +57,22 @@ class RelaySessionPort:
         *,
         server_hostname: str,
         endpoint_id: bytes,
+        device_secret: bytes,
         network_transport: NetworkTransport = NetworkTransport.WIFI,
     ) -> None:
         if len(endpoint_id) != 32:
             raise ValueError("endpoint_id must be exactly 32 bytes")
+        if not device_secret:
+            raise ValueError("device_secret must not be empty")
+        # Kept private and never surfaced in diagnostics, str() or repr().
+        self._device_secret = bytes(device_secret)
         self.host = host
         self.port = port
         self.ssl_context = ssl_context
         self.server_hostname = server_hostname
         self.endpoint_id = bytes(endpoint_id)
         self.network_transport = network_transport
+        self.relay_id: str | None = None
         self.controller: ControllerCallbacks | None = None
         self.connection: AsyncFramedConnection | None = None
         self._reader_task: asyncio.Task | None = None
@@ -111,24 +124,37 @@ class RelaySessionPort:
                     session_id=ZERO_ID,
                 )
             )
-            hello_ack = await connection.recv_frame()
-            if hello_ack.kind != FrameKind.HELLO_ACK:
+            hello_ack_frame = await connection.recv_frame()
+            if hello_ack_frame.kind != FrameKind.HELLO_ACK:
                 raise ProtocolError("relay did not return HELLO_ACK")
+            hello_ack = decode_payload(hello_ack_frame.kind, hello_ack_frame.payload)
+            if not isinstance(hello_ack, HelloAck):
+                raise ProtocolError("invalid HELLO_ACK")
+            self.relay_id = hello_ack.relay_id
 
             await connection.send_frame(
                 self._frame(AuthBegin(), request_id=2, call_id=ZERO_ID, session_id=ZERO_ID)
             )
-            challenge = await connection.recv_frame()
-            if challenge.kind != FrameKind.AUTH_CHALLENGE:
+            challenge_frame = await connection.recv_frame()
+            if challenge_frame.kind != FrameKind.AUTH_CHALLENGE:
                 raise ProtocolError("relay did not return AUTH_CHALLENGE")
+            challenge = decode_payload(challenge_frame.kind, challenge_frame.payload)
+            if not isinstance(challenge, AuthChallenge):
+                raise ProtocolError("invalid AUTH_CHALLENGE")
+            if challenge.method != DEVICE_HMAC_SHA256_V1:
+                raise ProtocolError(f"unsupported relay auth method {challenge.method!r}")
+            if len(challenge.nonce) < MIN_NONCE_LENGTH:
+                raise ProtocolError("relay auth nonce is too short")
+            proof = compute_proof(self._device_secret, challenge.nonce, self.endpoint_id, hello_ack.relay_id)
 
             await connection.send_frame(
-                self._frame(AuthResponse(b"test-proof"), request_id=3, call_id=ZERO_ID, session_id=ZERO_ID)
+                self._frame(AuthResponse(proof), request_id=3, call_id=ZERO_ID, session_id=ZERO_ID)
             )
             auth = await connection.recv_frame()
             if auth.kind == FrameKind.AUTH_FAIL:
                 detail = decode_payload(auth.kind, auth.payload)
-                raise ProtocolError(f"relay authentication failed: {detail}")
+                reason = detail.reason if isinstance(detail, AuthFail) else "unspecified"
+                raise RelayAuthenticationError(f"relay rejected device credential: {reason}")
             if auth.kind != FrameKind.AUTH_OK:
                 raise ProtocolError("relay did not return AUTH_OK")
         except Exception:

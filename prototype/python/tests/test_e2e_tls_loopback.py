@@ -9,6 +9,7 @@ from androidialup_protocol.byte_relay import ByteRelayReceiver
 from androidialup_protocol.frame import Frame, ZERO_ID
 from androidialup_protocol.messages import (
     AuthBegin,
+    AuthOk,
     AuthResponse,
     CallTerminated,
     DataBytes,
@@ -27,12 +28,14 @@ from androidialup_protocol.messages import (
     encode_payload,
     kind_for_message,
 )
+from androidialup_relay.auth import DEVICE_HMAC_SHA256_V1, InMemoryDeviceCredentialStore, compute_proof
 from androidialup_relay.server import RelayTcpServer
 from androidialup_relay.tls import create_client_ssl_context, create_server_ssl_context
 from tls_test_utils import generate_localhost_certificate
 
 CALL_ID = bytes.fromhex("102132435465768798a9bacbdcedfe0f")
 ENDPOINT_ID = bytes(reversed(range(32)))
+DEVICE_SECRET = bytes.fromhex("7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a")
 
 
 def frame_for(message, *, call_id=ZERO_ID, session_id=ZERO_ID, request_id=1):
@@ -50,7 +53,12 @@ class TlsEndToEndLoopbackTests(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         cert, key = generate_localhost_certificate(self.tmp.name, prefix="trusted")
         self.cert = cert
-        self.server = RelayTcpServer("127.0.0.1", 0, create_server_ssl_context(cert, key))
+        self.server = RelayTcpServer(
+            "127.0.0.1",
+            0,
+            create_server_ssl_context(cert, key),
+            credential_store=InMemoryDeviceCredentialStore({ENDPOINT_ID: DEVICE_SECRET}),
+        )
         await self.server.start()
 
     async def asyncTearDown(self):
@@ -70,11 +78,16 @@ class TlsEndToEndLoopbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ssl_object.version(), "TLSv1.3")
 
         await connection.send_frame(frame_for(Hello("AndroidDialup", "0.1", 1, 1, ENDPOINT_ID, ("BYTE_RELAY",)), request_id=1))
-        await connection.recv_frame()
+        hello_ack_frame = await connection.recv_frame()
+        hello_ack = decode_payload(hello_ack_frame.kind, hello_ack_frame.payload)
         await connection.send_frame(frame_for(AuthBegin(), request_id=2))
-        await connection.recv_frame()
-        await connection.send_frame(frame_for(AuthResponse(b"test-proof"), request_id=3))
-        await connection.recv_frame()
+        challenge_frame = await connection.recv_frame()
+        challenge = decode_payload(challenge_frame.kind, challenge_frame.payload)
+        self.assertEqual(challenge.method, DEVICE_HMAC_SHA256_V1)
+        proof = compute_proof(DEVICE_SECRET, challenge.nonce, ENDPOINT_ID, hello_ack.relay_id)
+        await connection.send_frame(frame_for(AuthResponse(proof), request_id=3))
+        auth_frame = await connection.recv_frame()
+        self.assertIsInstance(decode_payload(auth_frame.kind, auth_frame.payload), AuthOk)
         await connection.send_frame(
             frame_for(
                 DialRequest("loopback", Mode.BYTE_RELAY, NetworkTransport.WIFI, ("BYTE_RELAY",), 60000),

@@ -8,11 +8,25 @@ from androidialup_protocol.messages import (
     Hello, HelloAck, Mode, NetworkTransport, Ping, Pong, ProgressPhase,
     decode_payload, encode_payload, kind_for_message,
 )
+from androidialup_relay.auth import ChallengeResponseAuthenticator, InMemoryDeviceCredentialStore, compute_proof
 from androidialup_relay.session import RelaySession, RelaySessionState
 
 CALL_ID = b"C" * 16
 SESSION_ID = b"S" * 16
 ENDPOINT_ID = b"E" * 32
+DEVICE_SECRET = b"unit-test-device-secret"
+CREDENTIALS = InMemoryDeviceCredentialStore({ENDPOINT_ID: DEVICE_SECRET})
+
+
+def provisioned_session(**kwargs):
+    return RelaySession(authenticator=ChallengeResponseAuthenticator(CREDENTIALS), **kwargs)
+
+
+def authenticate(session, hello_frames, challenge_frames):
+    hello_ack = decode_payload(hello_frames[0].kind, hello_frames[0].payload)
+    challenge = decode_payload(challenge_frames[0].kind, challenge_frames[0].payload)
+    proof = compute_proof(DEVICE_SECRET, challenge.nonce, ENDPOINT_ID, hello_ack.relay_id)
+    return session.handle_frame(make_frame(AuthResponse(proof), request_id=3))
 
 
 def make_frame(message, *, call_id=ZERO_ID, session_id=ZERO_ID, request_id=1):
@@ -26,12 +40,12 @@ def make_frame(message, *, call_id=ZERO_ID, session_id=ZERO_ID, request_id=1):
 
 
 def authenticated_session():
-    session = RelaySession(session_id_factory=lambda: SESSION_ID)
+    session = provisioned_session(session_id_factory=lambda: SESSION_ID)
     hello = session.handle_frame(make_frame(Hello("AndroidDialup", "0.1", 1, 1, ENDPOINT_ID, ("BYTE_RELAY",))))
     assert isinstance(decode_payload(hello[0].kind, hello[0].payload), HelloAck)
     challenge = session.handle_frame(make_frame(AuthBegin(), request_id=2))
     assert isinstance(decode_payload(challenge[0].kind, challenge[0].payload), AuthChallenge)
-    auth = session.handle_frame(make_frame(AuthResponse(b"test-proof"), request_id=3))
+    auth = authenticate(session, hello, challenge)
     assert isinstance(decode_payload(auth[0].kind, auth[0].payload), AuthOk)
     return session
 
@@ -49,7 +63,7 @@ class RelaySessionTests(unittest.TestCase):
             session.handle_frame(make_frame(AuthBegin()))
         session.handle_frame(make_frame(Hello("AndroidDialup", "0.1", 1, 1, ENDPOINT_ID, ())))
         with self.assertRaisesRegex(ProtocolError, "AUTH_BEGIN"):
-            session.handle_frame(make_frame(AuthResponse(b"test-proof")))
+            session.handle_frame(make_frame(AuthResponse(b"not-a-proof")))
 
     def test_dial_accepts_and_progresses_to_connected(self):
         session = authenticated_session()
@@ -110,10 +124,10 @@ class RelaySessionTests(unittest.TestCase):
 
     def test_duplicate_active_dial_returns_existing_acceptance_without_redial(self):
         backend = LoopbackBackend()
-        session = RelaySession(backend=backend, session_id_factory=lambda: SESSION_ID)
-        session.handle_frame(make_frame(Hello("AndroidDialup", "0.1", 1, 1, ENDPOINT_ID, ())))
-        session.handle_frame(make_frame(AuthBegin(), request_id=2))
-        session.handle_frame(make_frame(AuthResponse(b"test-proof"), request_id=3))
+        session = provisioned_session(backend=backend, session_id_factory=lambda: SESSION_ID)
+        hello = session.handle_frame(make_frame(Hello("AndroidDialup", "0.1", 1, 1, ENDPOINT_ID, ())))
+        challenge = session.handle_frame(make_frame(AuthBegin(), request_id=2))
+        authenticate(session, hello, challenge)
         request, _ = dial_loopback(session)
         duplicate = session.handle_frame(make_frame(request, call_id=CALL_ID, session_id=ZERO_ID, request_id=4))
         self.assertEqual(len(duplicate), 1)
