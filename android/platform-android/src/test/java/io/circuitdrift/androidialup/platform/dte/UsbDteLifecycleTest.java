@@ -12,7 +12,8 @@ public final class UsbDteLifecycleTest {
     @Test
     public void attachStartsOneTransportAndDetachClosesIt() {
         List<String> events = new ArrayList<>();
-        FakeTransport transport = new FakeTransport("a", events);
+        List<String> transportOrder = new ArrayList<>();
+        FakeTransport transport = new FakeTransport("a", transportOrder);
         UsbDteLifecycle<String> lifecycle = new UsbDteLifecycle<>(key -> transport, events::add);
 
         assertTrue(lifecycle.attach("a"));
@@ -23,13 +24,15 @@ public final class UsbDteLifecycleTest {
         assertNull(lifecycle.activeKey());
         assertTrue(transport.closed);
         assertEquals(List.of("started:a", "detached:a"), events);
+        assertEquals(List.of("start:a", "close:a"), transportOrder);
     }
 
     @Test
     public void replacementClosesPreviousBeforeStartingNext() {
         List<String> events = new ArrayList<>();
-        FakeTransport first = new FakeTransport("a", events);
-        FakeTransport second = new FakeTransport("b", events);
+        List<String> transportOrder = new ArrayList<>();
+        FakeTransport first = new FakeTransport("a", transportOrder);
+        FakeTransport second = new FakeTransport("b", transportOrder);
         UsbDteLifecycle<String> lifecycle = new UsbDteLifecycle<>(key -> key.equals("a") ? first : second, events::add);
 
         assertTrue(lifecycle.attach("a"));
@@ -39,6 +42,7 @@ public final class UsbDteLifecycleTest {
         assertTrue(second.started);
         assertEquals("b", lifecycle.activeKey());
         assertEquals(List.of("started:a", "replaced:a", "started:b"), events);
+        assertEquals(List.of("start:a", "close:a", "start:b"), transportOrder);
     }
 
     @Test
@@ -58,7 +62,8 @@ public final class UsbDteLifecycleTest {
     @Test
     public void unrelatedDetachDoesNotCloseActiveTransport() {
         List<String> events = new ArrayList<>();
-        FakeTransport transport = new FakeTransport("a", events);
+        List<String> transportOrder = new ArrayList<>();
+        FakeTransport transport = new FakeTransport("a", transportOrder);
         UsbDteLifecycle<String> lifecycle = new UsbDteLifecycle<>(key -> transport, events::add);
 
         assertTrue(lifecycle.attach("a"));
@@ -66,26 +71,28 @@ public final class UsbDteLifecycleTest {
 
         assertFalse(transport.closed);
         assertEquals("a", lifecycle.activeKey());
+        assertEquals(List.of("start:a"), transportOrder);
     }
 
     private static final class FakeTransport implements UsbDteLifecycle.Transport {
         private final String key;
-        private final List<String> events;
+        private final List<String> order;
         boolean started;
         boolean closed;
 
-        FakeTransport(String key, List<String> events) {
+        FakeTransport(String key, List<String> order) {
             this.key = key;
-            this.events = events;
+            this.order = order;
         }
 
         @Override public void start() {
             started = true;
-            events.add("started:" + key);
+            order.add("start:" + key);
         }
 
         @Override public void close() {
             closed = true;
+            order.add("close:" + key);
         }
     }
 }
