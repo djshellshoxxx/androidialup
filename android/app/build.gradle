@@ -30,4 +30,6 @@ dependencies {
     // desugar_jdk_libs (Apache-2.0): backports supported newer java.util APIs used by the
     // Android-bound core modules to the app's minSdk 26 runtime.
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.3'
+
+    testImplementation 'junit:junit:4.13.2'
 }
