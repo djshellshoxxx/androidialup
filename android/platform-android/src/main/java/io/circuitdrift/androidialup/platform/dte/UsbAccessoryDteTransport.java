@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>AOA is an unprivileged USB path but is not CDC-ACM and does not by itself create a standard
  * COM port on the computer. A host-side AOA bridge may expose a local tty/COM-style endpoint.
  */
-public final class UsbAccessoryDteTransport implements AutoCloseable {
+public final class UsbAccessoryDteTransport implements UsbDteLifecycle.Transport {
 
     public interface Listener {
         default void onStarted(UsbAccessory accessory) {}
@@ -63,6 +63,7 @@ public final class UsbAccessoryDteTransport implements AutoCloseable {
      * @throws SecurityException if the application has not been granted accessory permission
      * @throws IOException if Android cannot open the accessory
      */
+    @Override
     public synchronized void start() throws IOException {
         if (closed.get()) throw new IllegalStateException("transport is closed");
         if (session != null) return;

@@ -5,8 +5,13 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.ServiceInfo;
+import android.hardware.usb.UsbAccessory;
+import android.hardware.usb.UsbManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.os.Binder;
@@ -26,6 +31,9 @@ import io.circuitdrift.androidialup.platform.AndroidNetworkManager;
 import io.circuitdrift.androidialup.platform.dialer.CallLog;
 import io.circuitdrift.androidialup.platform.dialer.DialerSession;
 import io.circuitdrift.androidialup.platform.dte.TcpDteServer;
+import io.circuitdrift.androidialup.platform.dte.UsbAccessoryCoordinator;
+import io.circuitdrift.androidialup.platform.dte.UsbAccessoryDteTransport;
+import io.circuitdrift.androidialup.platform.dte.UsbDteLifecycle;
 import io.circuitdrift.androidialup.platform.relay.DeviceCredentialAuth;
 import io.circuitdrift.androidialup.platform.relay.NetworkBoundRelayConnector;
 import io.circuitdrift.androidialup.platform.relay.RelayConnectException;
@@ -43,19 +51,22 @@ import java.security.GeneralSecurityException;
 import java.security.KeyStore;
 import java.security.SecureRandom;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.net.ssl.SSLSocketFactory;
 
 /**
  * Foreground service owning the modem runtime (S1_NETWORK_THREADING section 14): exactly one
- * {@link AndroidNetworkManager}, the loopback {@link TcpDteServer}, the developer
- * {@link DialerSession} and, per call, a {@link RelayTlsTransport} on the network selected at
- * dial time. UI components never touch ConnectivityManager or sockets; they bind to this
- * service and call its small API. No socket work happens on the main thread.
+ * {@link AndroidNetworkManager}, the developer loopback {@link TcpDteServer}, the I2 Android Open
+ * Accessory USB DTE, the developer {@link DialerSession} and, per call, a
+ * {@link RelayTlsTransport} on the network selected at dial time. UI components never touch
+ * ConnectivityManager or relay sockets; they bind to this service and call its small API.
  */
 public final class ModemService extends Service {
     private static final String TAG = "ModemService";
     private static final String CHANNEL_ID = "modem";
     private static final int NOTIFICATION_ID = 1;
+    private static final String ACTION_USB_PERMISSION =
+            "io.circuitdrift.androidialup.action.USB_ACCESSORY_PERMISSION";
 
     /** Same-process binder. */
     public final class LocalBinder extends Binder {
@@ -79,11 +90,41 @@ public final class ModemService extends Service {
     private final CopyOnWriteArrayList<Observer> observers = new CopyOnWriteArrayList<>();
     private final SecureRandom random = new SecureRandom();
 
+    private final BroadcastReceiver usbPermissionReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (!ACTION_USB_PERMISSION.equals(intent.getAction())) return;
+            UsbAccessory accessory = accessoryFrom(intent);
+            UsbAccessoryCoordinator<UsbAccessory> coordinator = usbCoordinator;
+            if (accessory == null || coordinator == null || usbManager == null) return;
+            boolean granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                    && usbManager.hasPermission(accessory);
+            coordinator.permissionResult(accessory, granted);
+        }
+    };
+
+    private final BroadcastReceiver usbAttachReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            UsbAccessoryCoordinator<UsbAccessory> coordinator = usbCoordinator;
+            if (coordinator == null) return;
+            UsbAccessory accessory = accessoryFrom(intent);
+            if (accessory == null) return;
+            if (UsbManager.ACTION_USB_ACCESSORY_ATTACHED.equals(intent.getAction())) {
+                coordinator.discovered(accessory);
+            } else if (UsbManager.ACTION_USB_ACCESSORY_DETACHED.equals(intent.getAction())) {
+                coordinator.detached(accessory);
+            }
+        }
+    };
+
     private AndroidNetworkManager network;
     private DialerSession dialer;
     private TcpDteServer dteServer;
+    private UsbManager usbManager;
+    private UsbAccessoryCoordinator<UsbAccessory> usbCoordinator;
+    private boolean usbReceiversRegistered;
     private volatile RelaySettings settings;
     private volatile String dteStatus = "starting";
+    private volatile String usbDteStatus = "USB DTE not initialized";
 
     @Override
     public void onCreate() {
@@ -116,6 +157,7 @@ public final class ModemService extends Service {
             }
         }, SystemClock::elapsedRealtime, System::nanoTime);
 
+        setupUsbDte();
         startDteServer(settings.dtePort);
     }
 
@@ -138,6 +180,10 @@ public final class ModemService extends Service {
 
     @Override
     public void onDestroy() {
+        unregisterUsbReceivers();
+        UsbAccessoryCoordinator<UsbAccessory> coordinator = usbCoordinator;
+        usbCoordinator = null;
+        if (coordinator != null) coordinator.close();
         if (dteServer != null) dteServer.close();
         if (dialer != null) dialer.close();
         if (network != null) network.close();
@@ -197,7 +243,11 @@ public final class ModemService extends Service {
         return dteStatus;
     }
 
-    // ---- internals ----------------------------------------------------------------------
+    public String usbDteStatus() {
+        return usbDteStatus;
+    }
+
+    // ---- TCP DTE -----------------------------------------------------------------------
 
     private void startDteServer(int port) {
         TcpDteServer previous = dteServer;
@@ -220,6 +270,89 @@ public final class ModemService extends Service {
                 Log.w(TAG, "TCP DTE listener failed on port " + port);
             }
         }, "dte-start").start();
+    }
+
+    // ---- USB accessory DTE -------------------------------------------------------------
+
+    private void setupUsbDte() {
+        usbManager = getSystemService(UsbManager.class);
+        if (usbManager == null) {
+            usbDteStatus = "USB accessory API unavailable";
+            return;
+        }
+
+        UsbDteLifecycle<UsbAccessory> lifecycle = new UsbDteLifecycle<>(
+                this::createUsbTransport, ignored -> {});
+        usbCoordinator = new UsbAccessoryCoordinator<>(
+                lifecycle,
+                usbManager::hasPermission,
+                this::requestUsbPermission,
+                value -> usbDteStatus = value);
+        registerUsbReceivers();
+
+        UsbAccessory[] attached = usbManager.getAccessoryList();
+        if (attached == null || attached.length == 0) {
+            usbDteStatus = "no USB accessory";
+            return;
+        }
+        usbCoordinator.discovered(attached[0]);
+    }
+
+    private UsbAccessoryDteTransport createUsbTransport(UsbAccessory accessory) {
+        AtomicReference<RelayModemSessionPort> relayPort = new AtomicReference<>();
+        return new UsbAccessoryDteTransport(
+                usbManager,
+                accessory,
+                (writer, modemExecutor) -> {
+                    RelayModemSessionPort port = new RelayModemSessionPort(this::openTransport, modemExecutor);
+                    ModemController controller = new ModemController(port, writer, BuildInfo.ID);
+                    port.bind(controller);
+                    relayPort.set(port);
+                    return controller;
+                },
+                new UsbAccessoryDteTransport.Listener() {
+                    @Override public void onClosed(UsbAccessory closedAccessory, String reason) {
+                        RelayModemSessionPort port = relayPort.getAndSet(null);
+                        if (port != null) port.close();
+                        UsbAccessoryCoordinator<UsbAccessory> coordinator = usbCoordinator;
+                        if (coordinator != null) coordinator.transportClosed(closedAccessory, reason);
+                    }
+                });
+    }
+
+    private void requestUsbPermission(UsbAccessory accessory) {
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) flags |= PendingIntent.FLAG_MUTABLE;
+        Intent result = new Intent(ACTION_USB_PERMISSION).setPackage(getPackageName());
+        PendingIntent pending = PendingIntent.getBroadcast(this, 1, result, flags);
+        usbManager.requestPermission(accessory, pending);
+    }
+
+    private void registerUsbReceivers() {
+        if (usbReceiversRegistered) return;
+        IntentFilter permission = new IntentFilter(ACTION_USB_PERMISSION);
+        IntentFilter attach = new IntentFilter(UsbManager.ACTION_USB_ACCESSORY_ATTACHED);
+        attach.addAction(UsbManager.ACTION_USB_ACCESSORY_DETACHED);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(usbPermissionReceiver, permission, Context.RECEIVER_NOT_EXPORTED);
+            registerReceiver(usbAttachReceiver, attach, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(usbPermissionReceiver, permission);
+            registerReceiver(usbAttachReceiver, attach);
+        }
+        usbReceiversRegistered = true;
+    }
+
+    private void unregisterUsbReceivers() {
+        if (!usbReceiversRegistered) return;
+        usbReceiversRegistered = false;
+        try { unregisterReceiver(usbPermissionReceiver); } catch (IllegalArgumentException ignored) {}
+        try { unregisterReceiver(usbAttachReceiver); } catch (IllegalArgumentException ignored) {}
+    }
+
+    @SuppressWarnings("deprecation")
+    private static UsbAccessory accessoryFrom(Intent intent) {
+        return intent.getParcelableExtra(UsbManager.EXTRA_ACCESSORY);
     }
 
     /**
@@ -291,7 +424,7 @@ public final class ModemService extends Service {
         return new Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_upload)
                 .setContentTitle("AndroidDialup modem")
-                .setContentText("TCP DTE and relay service running")
+                .setContentText("TCP/USB DTE and relay service running")
                 .setContentIntent(open)
                 .setOngoing(true)
                 .build();

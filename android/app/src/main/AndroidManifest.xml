@@ -12,6 +12,9 @@
     <!-- Runtime permission (API 33+) for the ongoing service notification to be visible. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- I2 AOA is optional: devices without accessory-mode hardware still support TCP DTE. -->
+    <uses-feature android:name="android.hardware.usb.accessory" android:required="false" />
+
     <application
         android:label="AndroidDialup"
         android:allowBackup="false"
@@ -24,14 +27,23 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Starts the app when the PC bridge re-enumerates with the exact CircuitDrift /
+                 AndroidDialup AOA identity. The service then enumerates the accessory and owns
+                 the permission/session lifecycle. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
+                android:resource="@xml/accessory_filter" />
         </activity>
 
         <activity
             android:name=".NetworkActivity"
             android:exported="false" />
 
-        <!-- Owns AndroidNetworkManager, the TCP DTE server and the relay transport. The modem
-             serves an external computer (DTE) over a network link, hence connectedDevice. -->
+        <!-- Owns AndroidNetworkManager, TCP/AOA DTE transports and the relay transport. The modem
+             serves an external computer over a USB or network link, hence connectedDevice. -->
         <service
             android:name=".ModemService"
             android:exported="false"

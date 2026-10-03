@@ -17,7 +17,7 @@ import java.util.Map;
  * Developer network screen (I1 network-control plan Task 5): policy picker
  * (AUTOMATIC / WIFI_ONLY / CELLULAR_ONLY / PREFER_WIFI / PREFER_CELLULAR), the developer
  * override for unvalidated networks, the live {@link NetworkDiagnosticsSnapshot}, and the relay
- * / TCP DTE settings.
+ * / TCP / USB DTE settings and status.
  */
 public final class NetworkActivity extends ServiceActivity {
     private RadioGroup policies;
@@ -146,6 +146,7 @@ public final class NetworkActivity extends ServiceActivity {
             out.append("\n  ").append(score.getKey()).append(" = ").append(score.getValue());
         }
         out.append("\nTCP DTE: ").append(service.dteStatus());
+        out.append("\nUSB DTE: ").append(service.usbDteStatus());
         diagnostics.setText(out.toString());
     }
 }
