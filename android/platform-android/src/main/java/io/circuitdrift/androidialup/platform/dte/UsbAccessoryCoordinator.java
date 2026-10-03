@@ -59,6 +59,13 @@ public final class UsbAccessoryCoordinator<K> implements AutoCloseable {
         status.accept("USB accessory detached");
     }
 
+    /** Called by the transport when its byte stream ends or fails before a physical detach. */
+    public synchronized void transportClosed(K key, String reason) {
+        Objects.requireNonNull(key, "key");
+        lifecycle.detach(key);
+        status.accept("USB DTE closed: " + Objects.requireNonNull(reason, "reason"));
+    }
+
     public synchronized K pendingPermissionKey() {
         return pendingPermission;
     }
