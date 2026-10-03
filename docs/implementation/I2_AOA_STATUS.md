@@ -10,8 +10,10 @@ Status: SOFTWARE PATH IMPLEMENTED; physical-device acceptance pending.
 - `ModemService` enumerates attached accessories at startup, dynamically handles attach/detach, requests permission with a package-scoped `PendingIntent`, and constructs the same `RelayModemSessionPort` + `ModemController` stack used by TCP DTE.
 - `NetworkActivity` exposes live USB DTE status.
 - `accessory_filter.xml` matches the PC bridge identity `manufacturer=CircuitDrift`, `model=AndroidDialup`; the dialer activity receives `USB_ACCESSORY_ATTACHED` so connecting the bridge can launch the app when it is not already running.
+- `SerialGadgetProvider` defines the privileged/root/system boundary for a real serial gadget endpoint without embedding configfs, UDC or SELinux assumptions in shared code.
+- `PrivilegedCdcAcmDteTransport` runs a provider endpoint through the same `StreamDteSession` and records only the modem-control capabilities the provider actually exposes.
 
-The Android Core Tests workflow compiles the application APK and all platform tests. No physical USB claim is made until Gate I2-B is run on hardware.
+The Android Core Tests workflow compiles the application APK and all platform tests. No physical USB claim is made until Gate I2-B/I2-C is run on hardware.
 
 ## Implemented PC host path
 
@@ -51,6 +53,7 @@ Pure tests cover:
 - USB accessory lifecycle replacement, detach, permission denial/grant and transport failure recovery;
 - bulk endpoint selection and AOA control-transfer mapping with fake PyUSB devices;
 - byte-exact bidirectional PC socket forwarding and half-close behavior;
+- privileged CDC provider opening, byte-stream integration and cleanup;
 - the existing modem/relay suites, Android adapter compile, instrumentation APK compile and app APK compile.
 
 ## Remaining I2 work
@@ -58,5 +61,5 @@ Pure tests cover:
 1. Run Gate I2-B on a physical Android phone and PC: permission, `AT` -> `OK`, `ATD`, 64 KiB binary transfer, unplug/replug.
 2. Add a POSIX PTY host adapter for Linux/macOS convenience.
 3. Decide whether Windows COM presentation should use a documented virtual-port driver or remain TCP for the unprivileged AOA helper.
-4. Define the privileged gadget-provider interface and implement a concrete CDC-ACM provider only after choosing a rooted/custom Android test device.
-5. Add DTR/DCD/RTS/CTS only where the selected CDC provider exposes real control-line state.
+4. Choose a rooted/system/custom Android test device and implement one concrete `SerialGadgetProvider` for its supported gadget stack.
+5. Run Gate I2-C and add DTR/DCD/RTS/CTS only where that provider exposes real control-line state.
