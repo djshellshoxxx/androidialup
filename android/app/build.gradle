@@ -19,10 +19,15 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
+        coreLibraryDesugaringEnabled true
     }
 }
 
 dependencies {
-    // Plain Android framework views only: no AndroidX/Compose/third-party UI libraries.
+    // Plain Android framework views only: no AndroidX/Compose UI libraries.
     implementation project(':platform-android')
+
+    // desugar_jdk_libs (Apache-2.0): backports supported newer java.util APIs used by the
+    // Android-bound core modules to the app's minSdk 26 runtime.
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.3'
 }
