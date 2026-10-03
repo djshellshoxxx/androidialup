@@ -56,6 +56,7 @@ class HostBridgeTest(unittest.TestCase):
             client.shutdown(socket.SHUT_WR)
 
             transport.inject_from_android(b"CONNECT 9600\r\nhello\x00world")
+            transport.close()  # USB EOF after its final bytes; PC half-close alone is not EOF here.
             received = bytearray()
             while True:
                 chunk = client.recv(4096)
