@@ -16,7 +16,7 @@ class RelaySessionHeartbeatTest {
     void setUp() {
         byte[] call = new byte[16];
         call[0] = 1;
-        machine = new RelaySessionMachine(endpoint, challenge -> new byte[]{1}, () -> call.clone());
+        machine = new RelaySessionMachine(endpoint, (relayId, endpointId, challenge) -> new byte[]{1}, () -> call.clone());
     }
 
     private AduFrame frame(FrameKind kind, Message message, long requestId) {
@@ -87,5 +87,36 @@ class RelaySessionHeartbeatTest {
         Ping ping = (Ping) PayloadCodec.decode(FrameKind.PING, pingFrame.payload());
         assertThrows(ProtocolException.class, () -> machine.onFrame(
                 frame(FrameKind.PONG, new Pong(ping.nonce() + 1), 0), 10010));
+    }
+
+    @Test
+    void unsolicitedPongIsProtocolViolation() {
+        authenticateAt(0, 10);
+        assertThrows(ProtocolException.class, () -> machine.onFrame(frame(FrameKind.PONG, new Pong(1), 0), 100));
+    }
+
+    @Test
+    void zeroHeartbeatIntervalDisablesPings() {
+        authenticateAt(0, 0);
+        assertTrue(machine.onTimer(1_000_000).isEmpty());
+        assertFalse(machine.heartbeatOutstanding());
+    }
+
+    @Test
+    void noPingBeforeAuthentication() {
+        machine.onTlsConnected(0);
+        assertTrue(machine.onTimer(7_999).isEmpty());
+        // Only the S1 section 7 authentication deadline may fire before AUTH_OK, never a PING.
+        List<RelaySessionMachine.Action> actions = machine.onTimer(60_000);
+        assertEquals(1, actions.size());
+        assertInstanceOf(RelaySessionMachine.TransportFailed.class, actions.get(0));
+    }
+
+    @Test
+    void inboundTrafficDefersNextPing() {
+        authenticateAt(0, 10);
+        machine.onFrame(frame(FrameKind.PING, new Ping(5, 0), 0), 8000);
+        assertTrue(machine.onTimer(17999).isEmpty());
+        assertEquals(FrameKind.PING, oneOutbound(machine.onTimer(18000)).frame().kind());
     }
 }

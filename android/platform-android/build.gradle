@@ -8,6 +8,9 @@ android {
 
     defaultConfig {
         minSdk 26
+        // Device-only acceptance tests live in src/androidTest. CI only assembles the test
+        // APK (assembleDebugAndroidTest); running it needs a physical device.
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
 
     compileOptions {
@@ -17,6 +20,17 @@ android {
 }
 
 dependencies {
-    implementation project(':core-network')
+    // Exposed as api: the app wires ModemController, RelaySessionMachine and network-policy
+    // types through the platform adapters' public signatures.
+    api project(':core-network')
+    api project(':core-protocol')
+    api project(':core-modem')
+    api project(':core-session')
+
     testImplementation 'junit:junit:4.13.2'
+
+    // androidx.test runner (Apache-2.0, Google Maven): instrumentation runner only, packaged
+    // into the androidTest APK, never into the library or the app.
+    androidTestImplementation 'androidx.test:runner:1.7.0'
+    androidTestImplementation 'junit:junit:4.13.2'
 }

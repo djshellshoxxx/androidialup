@@ -120,7 +120,7 @@ public final class PayloadCodec {
         void u16(long v){out.write((int)((v>>>8)&0xff));out.write((int)(v&0xff));}
         void u32(long v){for(int shift=24;shift>=0;shift-=8)out.write((int)((v>>>shift)&0xff));}
         void u64(long v){for(int shift=56;shift>=0;shift-=8)out.write((int)((v>>>shift)&0xff));}
-        void fixed(byte[] b){out.writeBytes(b);}
+        void fixed(byte[] b){out.write(b, 0, b.length);}
         void blob16(byte[] b){u16(b.length);fixed(b);}
         void text(String s){byte[] b=s.getBytes(StandardCharsets.UTF_8);u16(b.length);fixed(b);}
         void optionalText(String s){u8(s==null?0:1);if(s!=null)text(s);}

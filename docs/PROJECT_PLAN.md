@@ -76,11 +76,20 @@ Implement/port after license decision:
 
 Exit criterion: Bell-103/V.21-class target chosen from primary standard decodes externally generated vectors and interoperates with at least one independent implementation or hardware path.
 
-## Phase I5 — remote hardware modem
+## Phase I5 — remote modem over hosted SIP trunk (no-landline route)
 
-Implement Linux serial modem backend and DTE/result-code mapping.
+Primary: implement the `sip_trunk` gateway backend (`S1_GATEWAY_BACKEND.md` 4b)
+so the gateway reaches a legacy PSTN modem through a cloud SIP/VoIP trunk over
+IP, with G.711 voice-band-data passthrough and the modem terminating at the
+gateway. No analog line or telephony hardware is operated by the user; the
+Android bearer is Wi-Fi or cellular packet data.
 
-Exit criterion: Android DTE can dial a real remote modem through the relay/gateway architecture using packet data as the Android bearer.
+Secondary (self-host only): the Linux USB serial-modem backend and DTE/result-
+code mapping, for setups that choose to attach a physical line.
+
+Exit criterion: Android DTE dials a real remote modem and exchanges data in
+both directions through the relay and a hosted SIP trunk, over packet data,
+with no analog hardware operated by the user.
 
 ## Phase R2/I6 — standards expansion
 
@@ -99,13 +108,48 @@ Each standard gets its own conformance/interoperability matrix.
 
 ## Phase X1 — cellular voice research
 
-Only after privileged/device path exists:
-- characterize call audio API/routing
-- identify AMR/EVS/transcoding behavior
-- run legacy modem survivability matrix
-- prototype codec-aware project-specific data-over-voice mode if worthwhile
+Cellular voice failure must not block the packet-data product. X1 runs in parallel with, and
+never gates, I1–I7.
 
-Cellular voice failure must not block the packet-data product.
+Evidence and plan: `docs/research/CELLULAR_VOICE_CODECS_R2.md` (deep dive) and
+`docs/research/CELLULAR_VOICE_EXPERIMENTS_R2.md` (experiment matrix S-01..S-08, E-01..E-16).
+Constraints: S1_MEDIA_DSP_CONTRACT §13.1–§13.3 and §16. Rows: S1_TEST_PLAN §16.
+
+Working model: the cellular voice call is a lossy, frame-structured byte-bearer candidate,
+not an analogue line. The project uses modem relay at the phone. Mode hierarchy: packet data,
+then codec-aware data-over-voice (CVDM), then IMS RTT signalling, then legacy waveform
+passthrough (negative control only, never shipped).
+
+Stages and gates:
+
+1. **X1a — simulator** (may start once the I3 network simulator exists; needs no phone).
+   Build the codec-in-the-loop chain (AMR-NB/AMR-WB via Apache-2.0 open implementations,
+   GSM-FR and EVS reference code as test oracles pending licence review), DTX/VAD,
+   frame-aligned loss, JBM, mode switching, tandem and terminal voice-processing models.
+   Run S-01..S-03 and S-06.
+   **Gate G-X1-0:** codec stages bit-exact against the 3GPP conformance sequences; DTX, loss
+   and JBM reproduce the reference; CTM meets TS 26.231 in simulation.
+2. **X1b — unprivileged live rig.** Bluetooth HFP hands-free host (BlueZ/oFono/PipeWire)
+   plus far-end terminations. No privileged Android build is needed at this stage. Run E-01,
+   E-02, E-03.
+   **Gate G-X1-1:** repeatable codec-labelled calls; SCO stage quantified; CTM/TTY positive
+   control passes on at least one path where supported.
+3. **X1c — controls.** Run S-05, E-04, E-05 against their pre-registered failure
+   predictions, plus E-13 (CSD survey).
+   **Gate G-X1-2:** results published. No statement about legacy modes over cellular voice is
+   made before this gate.
+4. **X1d — CVDM go/no-go.** Run S-04 (calibrated by E-11), S-07, S-08, then E-06..E-09,
+   E-11, E-14, and E-12 (RTT, in parallel).
+   **Gate G-X1-3:** byte-exact CVDM in simulation for each codec family and live on at
+   least one path, with independent-receiver agreement. Otherwise the track closes with a
+   documented negative result.
+5. **X1e — robustness and optional privileged cross-check.** Run E-15 and E-10, plus E-16
+   if a privileged image exists.
+   **Gate G-X1-4 (claim gate):** required before any document, UI or release note says a
+   mode works over a cellular voice call.
+
+Only after G-X1-3 may a later S-amendment define the `CELLULAR_VOICE_EXPERIMENTAL` wire mode.
+The amendment must still keep it experimental and labelled (rule 6).
 
 ## Phase I7 — mobility
 

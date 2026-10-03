@@ -8,8 +8,8 @@ from androidialup_gateway.backend import BackendEventType
 from androidialup_gateway.loopback import LoopbackBackend
 from androidialup_protocol.byte_relay import DEFAULT_RECEIVE_WINDOW, ByteRelayReceiver, ByteRelaySender, FlowControlBlocked
 from androidialup_protocol.frame import Frame, FrameKind, ProtocolError, ZERO_ID
+from androidialup_protocol.liveness import DETAIL_BACKEND_FAILED, LinkFailure
 from androidialup_protocol.messages import (
-    AuthChallenge,
     AuthFail,
     AuthOk,
     AuthResponse,
@@ -32,6 +32,8 @@ from androidialup_protocol.messages import (
     kind_for_message,
 )
 
+from .auth import AUTH_FAILED_REASON, ChallengeResponseAuthenticator
+
 
 class RelaySessionState(str, Enum):
     NEW = "NEW"
@@ -50,17 +52,21 @@ class RelaySession:
         backend: LoopbackBackend | None = None,
         relay_id: str = "relay-prototype",
         gateway_id: str = "gw-loopback",
-        challenge_nonce: bytes = b"androidialup-test-nonce",
-        auth_validator: Callable[[bytes], bool] | None = None,
+        authenticator: ChallengeResponseAuthenticator | None = None,
         session_id_factory: Callable[[], bytes] | None = None,
+        heartbeat_seconds: int = 10,
     ) -> None:
         self.state = RelaySessionState.NEW
         self.backend = backend or LoopbackBackend()
         self.relay_id = relay_id
         self.gateway_id = gateway_id
-        self.challenge_nonce = bytes(challenge_nonce)
-        self.auth_validator = auth_validator or (lambda proof: proof == b"test-proof")
+        # Default authenticator has an empty credential store: nobody authenticates
+        # unless a store is explicitly provisioned.
+        self.authenticator = authenticator or ChallengeResponseAuthenticator()
         self.session_id_factory = session_id_factory or (lambda: secrets.token_bytes(16))
+        self.heartbeat_seconds = int(heartbeat_seconds)
+        #: Terminal reason of the most recent call that ended abnormally (diagnostics).
+        self.last_call_failure: LinkFailure | None = None
         self.endpoint_id: bytes | None = None
         self.call_id = ZERO_ID
         self.session_id = ZERO_ID
@@ -109,7 +115,7 @@ class RelaySession:
             self.state = RelaySessionState.HELLO_DONE
             return [
                 self._frame(
-                    HelloAck(1, self.relay_id, 1024 * 1024, 10, ("BYTE_RELAY",)),
+                    HelloAck(1, self.relay_id, 1024 * 1024, self.heartbeat_seconds, ("BYTE_RELAY",)),
                     request_id=frame.request_id,
                     call_id=ZERO_ID,
                     session_id=ZERO_ID,
@@ -120,10 +126,12 @@ class RelaySession:
             if frame.kind != FrameKind.AUTH_BEGIN:
                 raise ProtocolError("AUTH_BEGIN required after HELLO_ACK")
             decode_payload(frame.kind, frame.payload)
+            assert self.endpoint_id is not None
+            challenge = self.authenticator.begin(self.endpoint_id, self.relay_id)
             self.state = RelaySessionState.AUTH_CHALLENGE_SENT
             return [
                 self._frame(
-                    AuthChallenge(self.challenge_nonce, "device-credential"),
+                    challenge,
                     request_id=frame.request_id,
                     call_id=ZERO_ID,
                     session_id=ZERO_ID,
@@ -136,11 +144,11 @@ class RelaySession:
             response = decode_payload(frame.kind, frame.payload)
             if not isinstance(response, AuthResponse):
                 raise ProtocolError("invalid AUTH_RESPONSE")
-            if not self.auth_validator(response.proof):
+            if not self.authenticator.verify(response.proof):
                 self.state = RelaySessionState.FAILED
                 return [
                     self._frame(
-                        AuthFail("authentication failed"),
+                        AuthFail(AUTH_FAILED_REASON),
                         request_id=frame.request_id,
                         call_id=ZERO_ID,
                         session_id=ZERO_ID,
@@ -183,8 +191,20 @@ class RelaySession:
             self._inbound = ByteRelayReceiver()
             self._outbound = ByteRelaySender()
             self._terminal_sent = False
-            self.backend.open()
-            self.backend.dial(request.target, {"dial_timeout_ms": request.dial_timeout_ms})
+            try:
+                self.backend.open()
+                self.backend.dial(request.target, {"dial_timeout_ms": request.dial_timeout_ms})
+            except Exception:
+                # Gateway could not take the call at all: S1 GATEWAY_UNAVAILABLE.
+                failed = self._frame(
+                    DialFailed(self.call_id, DialFailure.GATEWAY_UNAVAILABLE, True, DETAIL_BACKEND_FAILED),
+                    request_id=frame.request_id,
+                    session_id=ZERO_ID,
+                )
+                self.last_call_failure = LinkFailure("BACKEND_UNAVAILABLE", DETAIL_BACKEND_FAILED)
+                self._release_backend()
+                self._reset_call()
+                return [failed]
             self.state = RelaySessionState.DIALING
             accepted = self._frame(
                 DialAccepted(self.call_id, self.session_id, self.gateway_id, Mode.BYTE_RELAY),
@@ -222,7 +242,10 @@ class RelaySession:
                     raise ProtocolError("DATA_BYTES not allowed before CONNECTED")
                 message = decode_payload(frame.kind, frame.payload)
                 data = self._inbound.accept(message)
-                self.backend.write(data)
+                try:
+                    self.backend.write(data)
+                except Exception:
+                    return self._backend_failed()
                 out = self.poll()
                 out.append(self._frame(FlowStatus(DEFAULT_RECEIVE_WINDOW, 0)))
                 return out
@@ -233,9 +256,53 @@ class RelaySession:
             raise ProtocolError("session is failed")
         raise ProtocolError(f"unhandled relay state {self.state}")
 
-    def poll(self) -> list[Frame]:
+    @property
+    def call_active(self) -> bool:
+        return self.state in {RelaySessionState.DIALING, RelaySessionState.CONNECTED}
+
+    @property
+    def authenticated(self) -> bool:
+        return self.state in {RelaySessionState.AUTHENTICATED, RelaySessionState.DIALING, RelaySessionState.CONNECTED}
+
+    def _release_backend(self) -> None:
+        try:
+            self.backend.close()
+        except Exception:
+            pass
+
+    def _backend_failed(self) -> list[Frame]:
+        """The gateway/backend died mid-call: terminate the call, keep the control session."""
+        failure = LinkFailure("BACKEND_UNAVAILABLE", DETAIL_BACKEND_FAILED)
         out: list[Frame] = []
-        for event in self.backend.poll_events():
+        if not self._terminal_sent:
+            out.append(self._frame(CallTerminated(failure.reason, TerminationSource.GATEWAY, failure.detail)))
+            self._terminal_sent = True
+        self.last_call_failure = failure
+        self._release_backend()
+        self._reset_call(keep_terminal=True)
+        return out
+
+    def abort(self, failure: LinkFailure) -> None:
+        """The control connection is gone: release any backend lease and fail the session."""
+        if self.call_active:
+            self.last_call_failure = failure
+            try:
+                self.backend.hangup(failure.reason)
+            except Exception:
+                pass
+        self._release_backend()
+        self._reset_call()
+        self.state = RelaySessionState.FAILED
+
+    def poll(self) -> list[Frame]:
+        if not self.call_active:
+            return []
+        try:
+            events = self.backend.poll_events()
+        except Exception:
+            return self._backend_failed()
+        out: list[Frame] = []
+        for event in events:
             if event.type == BackendEventType.PROGRESS:
                 out.append(self._frame(CallProgress(ProgressPhase.DIALING, event.detail)))
             elif event.type == BackendEventType.CONNECTED:

@@ -5,6 +5,7 @@ from androidialup_protocol.byte_relay import ByteRelayReceiver
 from androidialup_protocol.frame import Frame, ZERO_ID
 from androidialup_protocol.messages import (
     AuthBegin,
+    AuthOk,
     AuthResponse,
     CallProgress,
     CallTerminated,
@@ -24,11 +25,13 @@ from androidialup_protocol.messages import (
     encode_payload,
     kind_for_message,
 )
+from androidialup_relay.auth import ChallengeResponseAuthenticator, InMemoryDeviceCredentialStore, compute_proof
 from androidialup_relay.session import RelaySession, RelaySessionState
 
 CALL_ID = bytes.fromhex("00112233445566778899aabbccddeeff")
 SESSION_ID = bytes.fromhex("ffeeddccbbaa99887766554433221100")
 ENDPOINT_ID = bytes(range(32))
+DEVICE_SECRET = bytes.fromhex("0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0")
 
 
 def frame_for(message, *, call_id=ZERO_ID, session_id=ZERO_ID, request_id=1):
@@ -47,15 +50,23 @@ def decoded(frames):
 
 class EndToEndLoopbackTests(unittest.TestCase):
     def test_one_megabyte_binary_loopback_flow_control_heartbeat_and_hangup(self):
-        relay = RelaySession(session_id_factory=lambda: SESSION_ID)
+        credentials = InMemoryDeviceCredentialStore({ENDPOINT_ID: DEVICE_SECRET})
+        relay = RelaySession(
+            session_id_factory=lambda: SESSION_ID,
+            authenticator=ChallengeResponseAuthenticator(credentials),
+        )
 
         hello = relay.handle_frame(
             frame_for(Hello("AndroidDialup", "0.1", 1, 1, ENDPOINT_ID, ("BYTE_RELAY",)), request_id=1)
         )
         self.assertEqual(len(hello), 1)
+        hello_ack = decoded(hello)[0]
 
-        relay.handle_frame(frame_for(AuthBegin(), request_id=2))
-        relay.handle_frame(frame_for(AuthResponse(b"test-proof"), request_id=3))
+        (challenge,) = decoded(relay.handle_frame(frame_for(AuthBegin(), request_id=2)))
+        proof = compute_proof(DEVICE_SECRET, challenge.nonce, ENDPOINT_ID, hello_ack.relay_id)
+        (auth_ok,) = decoded(relay.handle_frame(frame_for(AuthResponse(proof), request_id=3)))
+        self.assertIsInstance(auth_ok, AuthOk)
+        self.assertEqual(relay.state, RelaySessionState.AUTHENTICATED)
 
         dial = DialRequest(
             "loopback",

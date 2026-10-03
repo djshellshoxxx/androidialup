@@ -4,6 +4,7 @@ import unittest
 
 from androidialup_modem.at_engine import ResultCode
 from androidialup_modem.relay_port import RelaySessionPort
+from androidialup_relay.auth import InMemoryDeviceCredentialStore
 from androidialup_relay.server import RelayTcpServer
 from androidialup_relay.tls import create_client_ssl_context, create_server_ssl_context
 from tls_test_utils import generate_localhost_certificate
@@ -15,21 +16,30 @@ class FakeController:
         self.remote_data = []
         self.remote_hangups = []
 
-    def on_dial_result(self, result):
+    def on_dial_result(self, result, reason=None):
         self.dial_results.append(result)
 
     def on_remote_data(self, data):
         self.remote_data.append(bytes(data))
 
-    def on_remote_hangup(self, reason="REMOTE_HANGUP"):
+    def on_remote_hangup(self, reason="REMOTE_HANGUP", detail=None):
         self.remote_hangups.append(reason)
+
+
+ENDPOINT_ID = b"R" * 32
+DEVICE_SECRET = b"relay-port-test-secret"
 
 
 class RelaySessionPortTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         cert, key = generate_localhost_certificate(self.tmp.name, prefix="relay-port")
-        self.server = RelayTcpServer("127.0.0.1", 0, create_server_ssl_context(cert, key))
+        self.server = RelayTcpServer(
+            "127.0.0.1",
+            0,
+            create_server_ssl_context(cert, key),
+            credential_store=InMemoryDeviceCredentialStore({ENDPOINT_ID: DEVICE_SECRET}),
+        )
         await self.server.start()
         host, port = self.server.address
         self.controller = FakeController()
@@ -38,7 +48,8 @@ class RelaySessionPortTests(unittest.IsolatedAsyncioTestCase):
             port,
             create_client_ssl_context(cert),
             server_hostname="localhost",
-            endpoint_id=b"R" * 32,
+            endpoint_id=ENDPOINT_ID,
+            device_secret=DEVICE_SECRET,
         )
         self.port.bind_controller(self.controller)
         await self.port.start()

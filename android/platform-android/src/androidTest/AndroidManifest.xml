@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Device acceptance only (test APK). Plain-TCP and TLS probes through a chosen Network. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- registerNetworkCallback / getNetworkCapabilities / getLinkProperties -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- requestNetwork(), to bring up cellular while Wi-Fi is the default network -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+</manifest>

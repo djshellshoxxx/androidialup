@@ -79,6 +79,35 @@ Beta method SHALL support a per-device credential over TLS. Exact credential pro
 
 On failure relay sends `AUTH_FAIL` then closes after flushing that frame.
 
+### 4.1 Beta method: `device-credential-hmac-sha256-v1`
+
+The Beta relay and client SHALL support the method identified by the
+`AUTH_CHALLENGE.method` string `device-credential-hmac-sha256-v1`.
+
+- The relay SHALL generate `nonce` from a CSPRNG, fresh per session, at
+  least 16 bytes (32 recommended). A client SHALL reject a shorter nonce.
+- A client SHALL reject an unrecognised `method` as a protocol violation
+  and SHALL NOT send `AUTH_RESPONSE` in that case.
+- `proof` SHALL be the 32-byte HMAC-SHA256, keyed with the device secret,
+  over the following transcript (integers big-endian, as elsewhere in ADUP):
+
+```text
+transcript =
+    "ADUP-AUTH-v1"                 12 ASCII bytes, no length prefix
+ || u16(len(relay_id_utf8)) || relay_id_utf8      relay_id from HELLO_ACK
+ || u16(len(nonce))         || nonce              nonce from AUTH_CHALLENGE
+ || endpoint_id                                   32 bytes, as sent in HELLO
+```
+
+- The relay SHALL verify `proof` with a constant-time comparison, SHALL
+  accept at most one `AUTH_RESPONSE` per nonce, and SHALL answer an
+  unknown `endpoint_id` with the same `AUTH_FAIL` reason as a bad proof.
+- Device secrets and proofs SHALL NOT appear in diagnostics or logs.
+
+Known-answer vector (secret, nonce, endpoint_id, relay_id -> proof) is in
+`docs/implementation/I1_RELAY_AUTH_STATUS.md`. Credential provisioning
+(enrolment, storage, rotation) remains outside this section.
+
 ## 5. Call creation
 
 Android generates `call_id` before dialing.

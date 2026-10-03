@@ -5,6 +5,7 @@ Status: normative for Beta 0.1 implementation unless superseded by a later S1 am
 ## 1. Scope
 
 Phase S1 converts the Phase R1 research into exact module boundaries and observable behavior. Beta 0.1 is a packet-data Android modem endpoint with modem-like DTE semantics. It does not require V.34/V.90 DSP or privileged cellular-call audio to succeed.
+Cellular voice work is governed by §10.1 and S1_MEDIA_DSP_CONTRACT §16.
 
 ## 2. Normative implementation target
 
@@ -273,6 +274,20 @@ CELLULAR_VOICE_EXPERIMENTAL
 ```
 
 Unknown mode identifiers must be rejected rather than silently downgraded.
+
+### 10.1 Experimental and cellular voice modes
+
+- `PCM_VBD_EXPERIMENTAL` is an IP-only mode (BETA_0_1_ARCHITECTURE §12.1). It SHALL NOT be
+  carried over a cellular voice call.
+- `CELLULAR_VOICE_EXPERIMENTAL` remains reserved in Beta 0.1. `AUTO` SHALL NOT select it, and
+  peers SHALL reject it as unsupported until a later S-amendment defines it. When defined, it
+  SHALL be a byte bearer with a codec-aware PHY (CVDM) under modem relay at the phone. It
+  SHALL NOT be a waveform transport, and it SHALL obey S1_MEDIA_DSP_CONTRACT §16.
+- Bearer ranking follows S1_MEDIA_DSP_CONTRACT §16.3: packet data, then CVDM over the voice
+  call, then IMS RTT signalling, then legacy waveform passthrough. The last is a negative
+  control and SHALL NOT receive a mode identifier.
+- Cellular voice failure SHALL NOT block any Beta acceptance gate (S1_MEDIA_DSP_CONTRACT
+  §16.1). Phase X1 gates are defined in `docs/research/CELLULAR_VOICE_EXPERIMENTS_R2.md` §4.
 
 ## 11. Security baseline
 

@@ -1,0 +1,15 @@
+# Gradle / Android
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+*.iml
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Claude Code agent worktrees
+.claude/worktrees/

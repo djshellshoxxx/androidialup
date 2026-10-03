@@ -378,6 +378,24 @@ media timestamp: u32, increments by number of 8 kHz samples
 
 Do not assert V.152 compliance yet. The mode is `PCM_VBD_EXPERIMENTAL` until the standard checklist is complete.
 
+### 12.1 PCM_VBD is an IP mode, not a cellular voice mode
+
+`PCM_VBD_EXPERIMENTAL` carries 8 kHz linear PCM in the project's own packets over IP (Wi-Fi
+or cellular packet data). It assumes a waveform-transparent path. A cellular voice call does
+not provide one: every deployed cellular speech codec is a 20 ms-frame parametric coder with
+DTX, PLC, jitter-buffer time-scaling and terminal voice processing, none of which an app can
+disable (S1_MEDIA_DSP_CONTRACT §16.2; CEL-002, CEL-003, CEL-005, CEL-009, CEL-023, CEL-042).
+Therefore:
+
+- PCM_VBD SHALL NOT be routed over a cellular voice call, and its results SHALL NOT be cited
+  as evidence about cellular voice.
+- The PCM_VBD zero-fill loss policy (S1_MEDIA_DSP_CONTRACT §6) is not a model of cellular
+  voice loss. Cellular loss is modelled frame-aligned with codec PLC (S1_MEDIA_DSP_CONTRACT
+  §13.2).
+- Bearer ranking follows the mode hierarchy in S1_MEDIA_DSP_CONTRACT §16.3: packet data,
+  then CVDM over the voice call, then IMS RTT signalling, then legacy waveform passthrough
+  (negative control only, never shipped).
+
 ## 13. Jitter buffer
 
 Inputs are ordered by extended sequence number and media timestamp.
@@ -485,6 +503,18 @@ Components:
 
 A later research document will choose exact mark/space frequencies, bit rates and framing directly from the relevant standard rather than from memory.
 
+### 16.1 Local FSK and cellular voice
+
+The Bell-103/V.21-class PHY targets the IP, local-audio and hardware-modem paths. Over a
+cellular voice call it is only a negative-control stimulus (X1 S-05, E-04). There is no
+evidence that it survives cellular speech codecs, and 3GPP standardised CTM because even
+45.45 bit/s Baudot FSK was unreliable through them (CEL-011, CEL-034;
+`docs/research/CELLULAR_VOICE_CODECS_R2.md` §3.3). A codec-surviving waveform (CVDM:
+frequency-coded symbols, FEC, interleaving, ARQ, burst resynchronisation) is a separate PHY
+governed by S1_MEDIA_DSP_CONTRACT §16.5. It SHALL NOT be developed by retuning the Beta FSK
+profile, although it MAY reuse the generic NCO, filter and detector blocks behind
+`ModemPhy`.
+
 ## 17. Gateway Beta
 
 Fastest reproducible gateway:
@@ -498,6 +528,22 @@ Linux host
 ```
 
 The first gateway need not use Asterisk or FreeSWITCH. Those should be introduced when SIP/PSTN/VBD interoperability is being tested, not as dependencies for basic Android session correctness.
+
+### 17.1 No-landline route to legacy modems
+
+The route to a legacy third-party modem that uses no analog line or telephony
+hardware operated by the user is the `sip_trunk` gateway backend
+(`S1_GATEWAY_BACKEND.md` 4b): the gateway reaches the PSTN number through a
+cloud SIP/VoIP trunk over IP, carrying modem signals as G.711 voice-band data,
+with the modem terminating at the gateway. The Android bearer stays Wi-Fi or
+cellular packet data. The optional USB serial-modem backend remains available
+only for self-hosted setups that choose to attach a line; it is not required
+and not the default path.
+
+Reaching a legacy modem over the phone's own cellular voice call (no trunk at
+all) stays an X1 experiment, not a Beta route: cellular speech codecs corrupt
+modem waveforms at any bit rate and call-audio access needs a privileged build
+(`docs/research/CELLULAR_VOICE_CODECS_R2.md`).
 
 ## 18. Security baseline
 
@@ -541,3 +587,14 @@ last disconnect reason
 - T.38 fax gateway completeness.
 
 These remain planned research/implementation tracks.
+
+### 20.1 Cellular voice non-goals
+
+- Implementing `CELLULAR_VOICE_EXPERIMENTAL` in the product. The mode stays reserved
+  (S1_SPEC_FREEZE §10.1). Its research runs in Phase X1 and cannot block Beta
+  (S1_MEDIA_DSP_CONTRACT §16.1).
+- Claiming that a V-series modem, fax or other waveform mode works over GSM, UMTS, VoLTE,
+  VoNR or VoWiFi voice calls. Such a claim requires X1 gate G-X1-4
+  (`docs/research/CELLULAR_VOICE_EXPERIMENTS_R2.md` §4; S1_MEDIA_DSP_CONTRACT §16.8).
+- Legacy waveform passthrough over a cellular voice call as a product mode in any release,
+  not only Beta. It is a negative-control experiment only (S1_MEDIA_DSP_CONTRACT §16.3).
