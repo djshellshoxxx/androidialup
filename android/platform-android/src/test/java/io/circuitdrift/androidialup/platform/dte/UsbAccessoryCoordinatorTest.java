@@ -73,6 +73,21 @@ public final class UsbAccessoryCoordinatorTest {
         assertEquals("USB accessory detached", h.status.get(h.status.size() - 1));
     }
 
+    @Test
+    public void unexpectedTransportClosureClearsActiveAndAllowsRestart() {
+        Harness h = new Harness();
+        h.authorized.add("a");
+        h.coordinator.discovered("a");
+
+        h.coordinator.transportClosed("a", "DTE_READ_FAILURE");
+        assertNull(h.lifecycle.activeKey());
+        assertEquals("USB DTE closed: DTE_READ_FAILURE", h.status.get(h.status.size() - 1));
+
+        h.coordinator.discovered("a");
+        assertEquals("a", h.lifecycle.activeKey());
+        assertEquals("USB DTE active", h.status.get(h.status.size() - 1));
+    }
+
     private static final class Harness {
         final Set<String> authorized = new HashSet<>();
         final List<String> permissionRequests = new ArrayList<>();
