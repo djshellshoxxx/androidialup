@@ -218,11 +218,11 @@ public final class StreamDteSession implements AutoCloseable {
     private void postToModem(Runnable task) {
         if (closed.get()) return;
         try {
-            modemExecutor.execute(() -> {
-                if (!closed.get()) task.run();
-            });
+            // Once a read has been accepted, preserve executor ordering even if EOF arrives
+            // immediately afterward. requestClose() queues onDteDisconnected() behind this task.
+            modemExecutor.execute(task);
         } catch (RejectedExecutionException ignored) {
-            // Shutdown won the race.
+            // Shutdown won the race before the task could be accepted.
         }
     }
 
