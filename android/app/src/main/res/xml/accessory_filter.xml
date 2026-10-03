@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Must match prototype/python/androidialup_host/aoa.py AccessoryIdentity.default().
+         Version intentionally omitted per Android USB accessory guidance. -->
+    <usb-accessory manufacturer="CircuitDrift" model="AndroidDialup" />
+</resources>
