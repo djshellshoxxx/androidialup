@@ -43,7 +43,7 @@ public final class PrivilegedCdcAcmDteTransport implements UsbDteLifecycle.Trans
                     : opened.capabilities();
             session = created;
             created.start();
-        } catch (IOException | RuntimeException failure) {
+        } catch (RuntimeException failure) {
             try { opened.close(); } catch (IOException ignored) {}
             endpoint = null;
             session = null;
