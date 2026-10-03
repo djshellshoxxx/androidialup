@@ -5,26 +5,28 @@ import static org.junit.Assert.*;
 import io.circuitdrift.androidialup.modem.ModemController;
 import io.circuitdrift.androidialup.modem.SessionPort;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.concurrent.Executor;
+import java.io.PipedInputStream;
+import java.io.PipedOutputStream;
 import org.junit.Test;
 
 public final class PrivilegedCdcAcmDteTransportTest {
 
     @Test
     public void opensProviderEndpointAndRunsSharedStreamSession() throws Exception {
-        FakeProvider provider = new FakeProvider("AT\r".getBytes());
+        FakeProvider provider = new FakeProvider();
         PrivilegedCdcAcmDteTransport transport = new PrivilegedCdcAcmDteTransport(
                 provider,
                 (writer, executor) -> new ModemController(new NoopSession(), writer, "test"));
 
         transport.start();
+        provider.hostInput.write("AT\r".getBytes("US-ASCII"));
+        provider.hostInput.flush();
         long deadline = System.currentTimeMillis() + 2000;
-        while (provider.output.size() == 0 && System.currentTimeMillis() < deadline) {
+        while (provider.output.size() < 6 && System.currentTimeMillis() < deadline) {
             Thread.sleep(10);
         }
 
@@ -37,7 +39,7 @@ public final class PrivilegedCdcAcmDteTransportTest {
     }
 
     @Test
-    public void startFailureClosesPartiallyOpenedEndpoint() {
+    public void startFailureLeavesTransportStopped() {
         SerialGadgetProvider provider = new SerialGadgetProvider() {
             @Override public Endpoint open() throws IOException {
                 throw new IOException("tty unavailable");
@@ -57,21 +59,25 @@ public final class PrivilegedCdcAcmDteTransportTest {
     }
 
     private static final class FakeProvider implements SerialGadgetProvider {
-        private final byte[] inputBytes;
+        final PipedInputStream deviceInput = new PipedInputStream();
+        final PipedOutputStream hostInput;
         final ByteArrayOutputStream output = new ByteArrayOutputStream();
         volatile boolean endpointClosed;
 
-        FakeProvider(byte[] inputBytes) {
-            this.inputBytes = inputBytes;
+        FakeProvider() throws IOException {
+            hostInput = new PipedOutputStream(deviceInput);
         }
 
         @Override public Endpoint open() {
             return new Endpoint() {
-                private final InputStream input = new ByteArrayInputStream(inputBytes);
-                @Override public InputStream input() { return input; }
+                @Override public InputStream input() { return deviceInput; }
                 @Override public OutputStream output() { return output; }
                 @Override public Capabilities capabilities() { return Capabilities.NONE; }
-                @Override public void close() { endpointClosed = true; }
+                @Override public void close() throws IOException {
+                    endpointClosed = true;
+                    hostInput.close();
+                    deviceInput.close();
+                }
             };
         }
     }
