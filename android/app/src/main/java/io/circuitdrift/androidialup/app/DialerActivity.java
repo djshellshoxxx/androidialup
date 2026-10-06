@@ -174,6 +174,7 @@ public final class DialerActivity extends ServiceActivity implements ModemServic
                 if (service != null) service.dialer().dial(testList.entryForDial(index), index + 1);
             });
             listEntries.addView(entry);
+            applyTooltipsRecursive(entry);
             entryButtons.add(entry);
         }
         render();
