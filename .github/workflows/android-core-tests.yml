@@ -27,6 +27,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.6.0'
+      - name: Check API 26 Java library compatibility
+        working-directory: android
+        run: python3 verify_api26_compat.py
       - name: Run control-plane tests and compile Android adapter
         working-directory: android
-        run: gradle :core-network:test :core-protocol:test :core-modem:test :core-session:test :platform-android:testDebugUnitTest :platform-android:assembleDebug :platform-android:assembleDebugAndroidTest :app:assembleDebug --stacktrace
+        run: gradle :core-network:test :core-protocol:test :core-modem:test :core-session:test :platform-android:testDebugUnitTest :app:testDebugUnitTest :platform-android:assembleDebug :platform-android:assembleDebugAndroidTest :app:assembleDebug --stacktrace
