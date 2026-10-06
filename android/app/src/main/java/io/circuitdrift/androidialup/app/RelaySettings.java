@@ -6,12 +6,12 @@ import android.content.SharedPreferences;
 import io.circuitdrift.androidialup.network.NetworkPolicy;
 
 /**
- * Developer relay configuration in app-private SharedPreferences.
+ * Developer relay configuration. Non-secret values live in app-private SharedPreferences;
+ * the device credential is protected by Android Keystore-backed AES-GCM storage.
  *
- * <p>Developer build only: the device secret is stored as hex in private preferences, not yet
- * in Android Keystore-backed storage as S1_SPEC_FREEZE section 11 requires for release (see
- * docs/implementation/I1_ANDROID_PLATFORM_STATUS.md, remaining work). It is never logged or
- * shown back in the UI.
+ * <p>Legacy builds wrote the credential under {@code device_secret}. The first successful load
+ * encrypts that value and removes the plaintext preference. The secret is never logged or shown
+ * back in the UI.
  */
 final class RelaySettings {
     private static final String PREFS = "relay_settings";
@@ -43,22 +43,37 @@ final class RelaySettings {
         } catch (IllegalArgumentException unknown) {
             policy = NetworkPolicy.AUTOMATIC;
         }
+
+        String deviceSecret = "";
+        try {
+            deviceSecret = AndroidDeviceSecretStore.open(context).load();
+        } catch (Exception unavailable) {
+            // Fail closed: an unavailable/corrupt Keystore credential is treated as missing.
+            // Dialing then reports LOCAL_CONFIG through incompleteReason().
+        }
+
         return new RelaySettings(
                 prefs.getString("host", ""),
                 prefs.getInt("port", 4443),
                 prefs.getString("endpoint_id", ""),
-                prefs.getString("device_secret", ""),
+                deviceSecret,
                 prefs.getString("ca_pem", ""),
                 prefs.getInt("dte_port", 2323),
                 policy);
     }
 
     void save(Context context) {
+        try {
+            AndroidDeviceSecretStore.open(context).save(deviceSecretHex);
+        } catch (Exception failure) {
+            throw new IllegalArgumentException("device secret could not be protected by Android Keystore", failure);
+        }
+
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putString("host", host)
                 .putInt("port", port)
                 .putString("endpoint_id", endpointIdHex)
-                .putString("device_secret", deviceSecretHex)
+                .remove(DeviceSecretStore.LEGACY_PLAINTEXT_KEY)
                 .putString("ca_pem", caPem)
                 .putInt("dte_port", dtePort)
                 .putString("policy", policy.name())
