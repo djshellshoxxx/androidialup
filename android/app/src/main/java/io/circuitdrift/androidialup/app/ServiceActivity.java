@@ -166,7 +166,7 @@ abstract class ServiceActivity extends Activity {
                 .show();
     }
 
-    private void applyTooltipsRecursive(View view) {
+    protected void applyTooltipsRecursive(View view) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (view != root) {
                 CharSequence description = tooltipFor(view);
