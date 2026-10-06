@@ -47,11 +47,14 @@ final class DeviceSecretStore {
         return legacy;
     }
 
+    /**
+     * Saves a supplied credential. An empty value means "leave the existing credential alone";
+     * callers use clear() for an explicit deletion so transient Keystore read failures cannot
+     * turn an unrelated settings save into credential loss.
+     */
     void save(String plaintext) throws Exception {
         String value = plaintext == null ? "" : plaintext.trim();
         if (value.isEmpty()) {
-            store.remove(ENCRYPTED_KEY);
-            store.remove(LEGACY_PLAINTEXT_KEY);
             return;
         }
 
@@ -60,6 +63,12 @@ final class DeviceSecretStore {
             throw new IllegalStateException("cipher returned an empty envelope");
         }
         store.put(ENCRYPTED_KEY, encrypted);
+        store.remove(LEGACY_PLAINTEXT_KEY);
+    }
+
+    /** Explicitly removes both the encrypted value and any legacy plaintext value. */
+    void clear() {
+        store.remove(ENCRYPTED_KEY);
         store.remove(LEGACY_PLAINTEXT_KEY);
     }
 }

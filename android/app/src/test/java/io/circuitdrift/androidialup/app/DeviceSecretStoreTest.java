@@ -32,19 +32,52 @@ public final class DeviceSecretStoreTest {
     }
 
     @Test
-    public void blankSaveClearsBothFormats() throws Exception {
+    public void blankSavePreservesExistingSecret() throws Exception {
         MemoryStore prefs = new MemoryStore();
         DeviceSecretStore store = new DeviceSecretStore(prefs, new PrefixCipher());
         store.save("abcd");
+        String encrypted = prefs.get(DeviceSecretStore.ENCRYPTED_KEY);
 
         store.save("");
 
-        assertEquals("", store.load());
-        assertNull(prefs.get(DeviceSecretStore.LEGACY_PLAINTEXT_KEY));
-        assertNull(prefs.get(DeviceSecretStore.ENCRYPTED_KEY));
+        assertEquals(encrypted, prefs.get(DeviceSecretStore.ENCRYPTED_KEY));
+        assertEquals("abcd", store.load());
     }
 
-    private static final class PrefixCipher implements DeviceSecretStore.Cipher {
+    @Test
+    public void clearRemovesEncryptedAndLegacyValues() throws Exception {
+        MemoryStore prefs = new MemoryStore();
+        DeviceSecretStore store = new DeviceSecretStore(prefs, new PrefixCipher());
+        store.save("abcd");
+        prefs.put(DeviceSecretStore.LEGACY_PLAINTEXT_KEY, "old-plaintext");
+
+        store.clear();
+
+        assertNull(prefs.get(DeviceSecretStore.LEGACY_PLAINTEXT_KEY));
+        assertNull(prefs.get(DeviceSecretStore.ENCRYPTED_KEY));
+        assertEquals("", store.load());
+    }
+
+    @Test
+    public void failedMigrationEncryptionRetainsLegacyValue() {
+        MemoryStore prefs = new MemoryStore();
+        prefs.put(DeviceSecretStore.LEGACY_PLAINTEXT_KEY, "deadbeef");
+        DeviceSecretStore store = new DeviceSecretStore(prefs, new PrefixCipher() {
+            @Override public String encrypt(String plaintext) {
+                throw new IllegalStateException("keystore unavailable");
+            }
+        });
+
+        try {
+            store.load();
+            fail("expected encryption failure");
+        } catch (Exception expected) {
+            assertEquals("deadbeef", prefs.get(DeviceSecretStore.LEGACY_PLAINTEXT_KEY));
+            assertNull(prefs.get(DeviceSecretStore.ENCRYPTED_KEY));
+        }
+    }
+
+    private static class PrefixCipher implements DeviceSecretStore.Cipher {
         public String encrypt(String plaintext) { return "enc:" + plaintext; }
         public String decrypt(String ciphertext) {
             if (!ciphertext.startsWith("enc:")) throw new IllegalArgumentException("bad envelope");
