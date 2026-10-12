@@ -145,6 +145,69 @@ class RelayServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.request_id, 9)
         await valid.close()
 
+    async def test_relay_rejects_excess_clients_without_disrupting_active_session(self):
+        await self.server.close()
+        self.server = RelayTcpServer(
+            "127.0.0.1", 0, self.server_context,
+            credential_store=InMemoryDeviceCredentialStore({ENDPOINT_ID: DEVICE_SECRET}),
+            max_clients=1,
+        )
+        await self.server.start()
+
+        active = await self.open_client()
+        await active.send_frame(frame_for(Hello("AndroidDialup", "0.1", 1, 1, ENDPOINT_ID, ())))
+        self.assertEqual((await active.recv_frame()).kind, FrameKind.HELLO_ACK)
+
+        refused = await self.open_client()
+        with self.assertRaises((ConnectionClosed, ConnectionError, EOFError, OSError)):
+            await asyncio.wait_for(refused.recv_frame(), 2.0)
+        self.assertEqual(len(self.server.connections), 1)
+
+        # A rejected connection must not damage the already admitted session.
+        await active.send_frame(frame_for(AuthBegin(), request_id=2))
+        self.assertEqual((await active.recv_frame()).kind, FrameKind.AUTH_CHALLENGE)
+        await refused.close()
+        await active.close()
+
+        for _ in range(100):
+            if not self.server.connections:
+                break
+            await asyncio.sleep(0.01)
+        self.assertFalse(self.server.connections)
+
+        replacement = await self.open_client()
+        await replacement.send_frame(frame_for(Hello("AndroidDialup", "0.1", 1, 1, ENDPOINT_ID, ())))
+        self.assertEqual((await replacement.recv_frame()).kind, FrameKind.HELLO_ACK)
+        await replacement.close()
+
+    async def test_close_history_has_configured_bound(self):
+        await self.server.close()
+        self.server = RelayTcpServer(
+            "127.0.0.1", 0, self.server_context,
+            credential_store=InMemoryDeviceCredentialStore({ENDPOINT_ID: DEVICE_SECRET}),
+            max_close_records=3,
+        )
+        await self.server.start()
+
+        for _ in range(7):
+            client = await self.open_client()
+            await client.send_frame(frame_for(Hello("AndroidDialup", "0.1", 1, 1, ENDPOINT_ID, ())))
+            self.assertEqual((await client.recv_frame()).kind, FrameKind.HELLO_ACK)
+            await client.close()
+            for _ in range(100):
+                if not self.server.connections:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertFalse(self.server.connections)
+
+        self.assertEqual(len(self.server.close_records), 3)
+
+    async def test_invalid_relay_limits_are_rejected(self):
+        with self.assertRaises(ValueError):
+            RelayTcpServer("127.0.0.1", 0, self.server_context, max_clients=0)
+        with self.assertRaises(ValueError):
+            RelayTcpServer("127.0.0.1", 0, self.server_context, max_close_records=-1)
+
     async def test_clean_client_eof_does_not_stop_listener(self):
         first = await self.open_client()
         await first.close()
