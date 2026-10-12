@@ -119,17 +119,27 @@ class RelayTcpServer:
             self._client_tasks.add(task)
         connection = AsyncFramedConnection(reader, writer)
         self.connections.add(connection)
-        session = self.session_factory()
+        session: RelaySession | None = None
         failure: LinkFailure | None = None
         try:
+            session = self.session_factory()
             failure = await self._serve(connection, session)
         except asyncio.CancelledError:
             failure = LinkFailure("RELAY_UNAVAILABLE", "RELAY_SHUTDOWN")
             raise
+        except Exception:
+            # A broken custom session factory or an unexpected session failure must
+            # not leak this connection and permanently consume an admission slot.
+            failure = LinkFailure("INTERNAL_ERROR", "SESSION_ERROR")
         finally:
             if failure is None:
                 failure = LinkFailure("INTERNAL_ERROR")
-            session.abort(failure)
+            if session is not None:
+                try:
+                    session.abort(failure)
+                except Exception:
+                    # Release transport resources even if backend shutdown fails.
+                    pass
             self.close_records.append(failure)
             if len(self.close_records) > self.max_close_records:
                 del self.close_records[:len(self.close_records) - self.max_close_records]
