@@ -8,6 +8,8 @@ from androidialup_protocol.messages import (
     DataBytes,
     DialFailed,
     DialFailure,
+    HangupRequest,
+    HangupAck,
     TerminationSource,
     decode_payload,
 )
@@ -38,6 +40,11 @@ class CrashingBackend(LoopbackBackend):
         if self.dead:
             raise ConnectionResetError("gateway process died")
         return super().poll_events(now=now)
+
+    def hangup(self, reason="LOCAL_HANGUP"):
+        if self.dead:
+            raise ConnectionResetError("gateway process died during hangup")
+        return super().hangup(reason)
 
 
 def session_with(backend):
@@ -72,6 +79,24 @@ class RelaySessionFailureTests(unittest.TestCase):
         frames = session.handle_frame(make_frame(DataBytes(0, b"abc"), call_id=CALL_ID, session_id=SESSION_ID, request_id=0))
         self.assertEqual(decoded(frames), [CallTerminated("BACKEND_UNAVAILABLE", TerminationSource.GATEWAY, "BACKEND_FAILED")])
         self.assertEqual(session.state, RelaySessionState.AUTHENTICATED)
+
+    def test_backend_death_during_hangup_acks_and_terminates_once(self):
+        backend = CrashingBackend()
+        session = session_with(backend)
+        dial_loopback(session)
+        backend.dead = True
+        frames = session.handle_frame(
+            make_frame(HangupRequest("user"), call_id=CALL_ID, session_id=SESSION_ID, request_id=9)
+        )
+        messages = decoded(frames)
+        self.assertEqual(sum(isinstance(m, HangupAck) for m in messages), 1)
+        self.assertEqual(
+            [m for m in messages if isinstance(m, CallTerminated)],
+            [CallTerminated("BACKEND_UNAVAILABLE", TerminationSource.GATEWAY, "BACKEND_FAILED")],
+        )
+        self.assertEqual(session.last_call_failure, LinkFailure("BACKEND_UNAVAILABLE", "BACKEND_FAILED"))
+        self.assertEqual(session.state, RelaySessionState.AUTHENTICATED)
+        self.assertEqual(session.poll(), [])
 
     def test_backend_dial_exception_maps_to_gateway_unavailable(self):
         backend = CrashingBackend()
