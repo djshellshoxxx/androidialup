@@ -234,7 +234,12 @@ class RelaySession:
             if frame.kind == FrameKind.HANGUP_REQUEST:
                 decode_payload(frame.kind, frame.payload)
                 ack = self._frame(HangupAck(), request_id=frame.request_id)
-                self.backend.hangup("LOCAL_HANGUP")
+                try:
+                    self.backend.hangup("LOCAL_HANGUP")
+                except Exception:
+                    # A gateway dying during hangup must not tear down the authenticated
+                    # control connection or leave a call stuck in CONNECTED.
+                    return [ack, *self._backend_failed()]
                 return [ack, *self.poll()]
 
             if frame.kind == FrameKind.DATA_BYTES:
