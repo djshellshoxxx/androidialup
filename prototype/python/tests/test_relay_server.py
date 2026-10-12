@@ -202,6 +202,31 @@ class RelayServerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(self.server.close_records), 3)
 
+    async def test_session_factory_failure_releases_client_capacity(self):
+        await self.server.close()
+
+        def failing_factory():
+            raise RuntimeError("cannot initialize session")
+
+        self.server = RelayTcpServer(
+            "127.0.0.1", 0, self.server_context,
+            session_factory=failing_factory, max_clients=1,
+        )
+        await self.server.start()
+        for _ in range(2):
+            client = await self.open_client()
+            try:
+                with self.assertRaises(ConnectionClosed):
+                    await asyncio.wait_for(client.recv_frame(), 1.0)
+            finally:
+                client.abort()
+            for _ in range(100):
+                if not self.server.connections and not self.server._client_tasks:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertFalse(self.server.connections)
+            self.assertFalse(self.server._client_tasks)
+
     async def test_invalid_relay_limits_are_rejected(self):
         with self.assertRaises(ValueError):
             RelayTcpServer("127.0.0.1", 0, self.server_context, max_clients=0)
