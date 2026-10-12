@@ -30,12 +30,13 @@ Baseline: `main` at `71ab245ee1ce274338eb40f4c4c317599d2e911b` (PR #9, 2026-10-0
 
 1. `prototype/python/androidialup_relay/session.py`: a backend exception during `HANGUP_REQUEST` escaped the relay call-state handler. Added a regression test in `tests/test_relay_session_failures.py`, and now send the normal `HANGUP_ACK` followed by one `BACKEND_UNAVAILABLE` termination while returning to the authenticated control state.
 2. `README.md`: install instructions checked out an old merged branch; changed to `main`. Replaced the nonexistent `PROTOCOL_AND_MODULE_CONTRACTS.md` documentation reference with existing S1 files and clarified software-vs-hardware verification.
+3. `prototype/python/androidialup_relay/server.py`: bounded active framed connections (default 64) and retained close-history entries (default 1024), with TLS client admission and bounded-history tests. This does not address pre-handshake TLS resource use.
 
 ## Unresolved audit findings, prioritized
 
 **P1 — bounded resources and remote robustness**
 
-- Python `RelayTcpServer` tracks each completed client in an ever-growing `close_records` list, and has no explicit concurrent-session cap. Long-running internet-facing deployments risk unbounded diagnostics memory growth and client/task resource exhaustion. Add configurable limits, close-record ring, and authenticated/load/concurrency tests. Limit TLS handshake time as well.
+- On baseline `main`, Python `RelayTcpServer` retained unbounded close history and had no framed-connection cap. Audit PR #17 now adds configurable limits and targeted tests. Outstanding hardening includes **pre-handshake TLS** connection limits/timeouts, authenticated load testing, and bounded diagnostics across any future persistent storage.
 - Java `TcpDteServer` allocates multiple threads and a scheduled executor per client without a global client bound; inbound read tasks use the scheduler's unbounded queue. Bound clients/inbound pending bytes and prove under a deliberately slow controller that excess input is rejected/disconnected rather than buffered indefinitely.
 - Strengthen unauthenticated input, parser fuzz/property tests, size bounds and test clients that never complete TLS/HELLO/AUTH. Frame payload bounds exist, but server-level denial-of-service testing is incomplete.
 
