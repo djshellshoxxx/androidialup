@@ -31,6 +31,7 @@ Baseline: `main` at `71ab245ee1ce274338eb40f4c4c317599d2e911b` (PR #9, 2026-10-0
 1. `prototype/python/androidialup_relay/session.py`: a backend exception during `HANGUP_REQUEST` escaped the relay call-state handler. Added a regression test in `tests/test_relay_session_failures.py`, and now send the normal `HANGUP_ACK` followed by one `BACKEND_UNAVAILABLE` termination while returning to the authenticated control state.
 2. `README.md`: install instructions checked out an old merged branch; changed to `main`. Replaced the nonexistent `PROTOCOL_AND_MODULE_CONTRACTS.md` documentation reference with existing S1 files and clarified software-vs-hardware verification.
 3. `prototype/python/androidialup_relay/server.py`: bounded active framed connections (default 64) and retained close-history entries (default 1024), with TLS client admission and bounded-history tests. This does not address pre-handshake TLS resource use.
+4. `prototype/python/androidialup_relay/server.py`: custom `session_factory` errors previously bypassed the `finally` release path, leaking live connection tracking and admission capacity. Initialization now occurs inside the exception-safe block; regression tests exercise repeated failures.
 
 ## Unresolved audit findings, prioritized
 
