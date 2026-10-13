@@ -33,6 +33,8 @@ public final class StreamDteSession implements AutoCloseable {
     public static final long DEFAULT_TIMER_TICK_MS = 10;
     public static final int DEFAULT_MAX_QUEUED_DTE_BYTES = 1024 * 1024;
     public static final int DEFAULT_MAX_QUEUED_WRITES = 1024;
+    /** Maximum USB/stream DTE bytes pending consumption on the modem executor. */
+    public static final int DEFAULT_MAX_PENDING_INPUT_BYTES = 1024 * 1024;
     private static final int READ_BUFFER_BYTES = 64 * 1024;
     private static final byte[] STOP = new byte[0];
     private static final AtomicInteger IDS = new AtomicInteger();
@@ -55,9 +57,11 @@ public final class StreamDteSession implements AutoCloseable {
     private final Listener listener;
     private final long timerTickMs;
     private final int maxQueuedDteBytes;
+    private final int maxPendingInputBytes;
     private final LongSupplier nanoClock;
     private final ArrayBlockingQueue<byte[]> writeQueue;
     private final AtomicInteger queuedBytes = new AtomicInteger();
+    private final AtomicInteger pendingInputBytes = new AtomicInteger();
     private final AtomicBoolean started = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean disconnectDelivered = new AtomicBoolean();
@@ -77,6 +81,14 @@ public final class StreamDteSession implements AutoCloseable {
     public StreamDteSession(InputStream input, OutputStream output, ControllerFactory factory,
                             Listener listener, long timerTickMs, int maxQueuedDteBytes,
                             int maxQueuedWrites, LongSupplier nanoClock) {
+        this(input, output, factory, listener, timerTickMs, maxQueuedDteBytes, maxQueuedWrites,
+                nanoClock, DEFAULT_MAX_PENDING_INPUT_BYTES);
+    }
+
+    /** Adds a configurable cap on DTE input awaiting processing by the modem owner. */
+    public StreamDteSession(InputStream input, OutputStream output, ControllerFactory factory,
+                            Listener listener, long timerTickMs, int maxQueuedDteBytes,
+                            int maxQueuedWrites, LongSupplier nanoClock, int maxPendingInputBytes) {
         this.input = Objects.requireNonNull(input, "input");
         this.output = Objects.requireNonNull(output, "output");
         Objects.requireNonNull(factory, "factory");
@@ -88,7 +100,11 @@ public final class StreamDteSession implements AutoCloseable {
         if (maxQueuedWrites <= 0) {
             throw new IllegalArgumentException("maxQueuedWrites must be positive");
         }
+        if (maxPendingInputBytes <= 0) {
+            throw new IllegalArgumentException("maxPendingInputBytes must be positive");
+        }
         this.maxQueuedDteBytes = maxQueuedDteBytes;
+        this.maxPendingInputBytes = maxPendingInputBytes;
         this.writeQueue = new ArrayBlockingQueue<>(maxQueuedWrites);
         this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
         this.modemExecutor = new ScheduledThreadPoolExecutor(1, runnable -> {
@@ -161,9 +177,24 @@ public final class StreamDteSession implements AutoCloseable {
                     return;
                 }
                 if (count == 0) continue;
+                // Keep modem executor memory bounded even if a USB host sends data faster
+                // than the single controller owner can process it.
+                if (!reservePendingInput(count)) {
+                    requestClose("DTE_INPUT_QUEUE_OVERFLOW");
+                    return;
+                }
                 byte[] chunk = new byte[count];
                 System.arraycopy(buffer, 0, chunk, 0, count);
-                postToModem(() -> controller.feedDte(chunk, nanoClock.getAsLong()));
+                if (!postToModem(() -> {
+                    try {
+                        controller.feedDte(chunk, nanoClock.getAsLong());
+                    } finally {
+                        pendingInputBytes.addAndGet(-chunk.length);
+                    }
+                })) {
+                    pendingInputBytes.addAndGet(-count);
+                    return;
+                }
             }
         } catch (IOException failure) {
             if (!closed.get()) requestClose("DTE_READ_FAILURE");
@@ -215,14 +246,24 @@ public final class StreamDteSession implements AutoCloseable {
         }
     }
 
-    private void postToModem(Runnable task) {
-        if (closed.get()) return;
+    private boolean reservePendingInput(int bytes) {
+        while (true) {
+            int current = pendingInputBytes.get();
+            if ((long) current + bytes > maxPendingInputBytes) return false;
+            if (pendingInputBytes.compareAndSet(current, current + bytes)) return true;
+        }
+    }
+
+    private boolean postToModem(Runnable task) {
+        if (closed.get()) return false;
         try {
             // Once a read has been accepted, preserve executor ordering even if EOF arrives
             // immediately afterward. requestClose() queues onDteDisconnected() behind this task.
             modemExecutor.execute(task);
+            return true;
         } catch (RejectedExecutionException ignored) {
             // Shutdown won the race before the task could be accepted.
+            return false;
         }
     }
 
@@ -237,11 +278,19 @@ public final class StreamDteSession implements AutoCloseable {
 
         try {
             modemExecutor.execute(() -> {
-                if (disconnectDelivered.compareAndSet(false, true)) {
-                    controller.onDteDisconnected();
+                try {
+                    if (disconnectDelivered.compareAndSet(false, true)) {
+                        // Even a failing relay backend must not strand the stream lifecycle.
+                        try {
+                            controller.onDteDisconnected();
+                        } catch (RuntimeException ignored) {
+                            // Transport teardown and listener notification are mandatory.
+                        }
+                    }
+                    listener.onClosed(reason);
+                } finally {
+                    modemExecutor.shutdown();
                 }
-                listener.onClosed(reason);
-                modemExecutor.shutdown();
             });
         } catch (RejectedExecutionException rejected) {
             listener.onClosed(reason);
