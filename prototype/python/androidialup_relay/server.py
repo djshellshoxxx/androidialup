@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import ssl
 from collections.abc import Callable
 from contextlib import suppress
@@ -39,6 +40,7 @@ class RelayTcpServer:
         backend_poll_interval: float = 0.05,
         max_clients: int = 64,
         max_close_records: int = 1024,
+        tls_handshake_timeout: float = 10.0,
     ) -> None:
         if session_factory is not None and credential_store is not None:
             raise ValueError("pass either session_factory or credential_store, not both")
@@ -46,6 +48,8 @@ class RelayTcpServer:
             raise ValueError("max_clients must be at least 1")
         if max_close_records < 0:
             raise ValueError("max_close_records must not be negative")
+        if not math.isfinite(tls_handshake_timeout) or tls_handshake_timeout <= 0:
+            raise ValueError("tls_handshake_timeout must be finite and positive")
         self.host = host
         self.port = port
         self.ssl_context = ssl_context
@@ -62,6 +66,7 @@ class RelayTcpServer:
         self.backend_poll_interval = backend_poll_interval
         self.max_clients = max_clients
         self.max_close_records = max_close_records
+        self.tls_handshake_timeout = tls_handshake_timeout
         #: One S1 terminal reason per finished client connection, in close order.
         self.close_records: list[LinkFailure] = []
         #: Live client connections (diagnostics and failure injection).
@@ -84,6 +89,9 @@ class RelayTcpServer:
             self.host,
             self.port,
             ssl=self.ssl_context,
+            # Applied by asyncio before _handle_client; max_clients admission only
+            # occurs once TLS is established.
+            ssl_handshake_timeout=self.tls_handshake_timeout,
         )
 
     async def close(self) -> None:
