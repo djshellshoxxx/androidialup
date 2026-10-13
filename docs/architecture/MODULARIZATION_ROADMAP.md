@@ -15,7 +15,7 @@ Updated: 2026-10-13. Status: incremental, compatibility-first. Scope is the Andr
 | Python protocol | `prototype/python/androidialup_protocol` | ADUP transport, codecs, flow control and liveness | Mostly cohesive; use Java/Python golden vectors as contract. |
 | Python relay/gateway | `androidialup_relay`, `androidialup_gateway` | Relay server/session, backend lifecycle | Keep server admission and backend failures isolated from frame semantics. |
 | Python modem | `androidialup_modem` | AT command and modem DTE | Preserve parity with JVM modem and error taxonomy. |
-| Python PC host | `androidialup_host` | AOA discovery, PyUSB adapter, host bridge, TCP listener and CLI | Discovery extracted into `accessory_discovery.py`; `tcp_listener.py` now owns one-client TCP lifetime with `cli.run()` as composition root. |
+| Python PC host | `androidialup_host` | AOA discovery, USB descriptor selection, PyUSB adapter, host bridge, TCP listener and CLI | `accessory_discovery.py` handles discovery; `tcp_listener.py` owns sockets; `usb_endpoints.py` now handles pure USB descriptor classification. |
 
 ## Approved incremental sequence
 
@@ -34,6 +34,14 @@ Updated: 2026-10-13. Status: incremental, compatibility-first. Scope is the Andr
 - **Error contract:** Return `0` for completed bridge; return `3` and print the original diagnostic on bridge `OSError`/`RuntimeError`; propagate socket bind/listen/accept failures. Do not change those contracts during this refactor.
 - **Dependency direction:** CLI (options and composition) → TCP listener (socket lifetime) → injected bridge function (byte forwarding). The listener does not know PyUSB, protocol frames or Android state and can be tested without USB hardware.
 - **Tests:** `prototype/python/tests/test_host_cli.py` checks unchanged CLI behavior; `test_host_listener.py` checks the extracted interface, socket cleanup and error paths. Run full Linux and native Windows Python, Android lint/release build and Android core tests as applicable.
+
+## Portable USB descriptor selection interface
+
+The next independent, safe extraction is `androidialup_host.usb_endpoints.select_bulk_endpoints(interface)`, which accepts an iterable of USB endpoint descriptor objects and returns the first bulk IN and bulk OUT descriptors by the original ordering/mask rules. The module has no dependency on PyUSB/libusb, performs no I/O, and never configures or closes devices. It raises the same `RuntimeError` text if either direction is unavailable.
+
+`androidialup_host.pyusb_backend.open_bulk_transport(device, *, timeout_ms=0)` remains the public USB adapter. It still calls `device.set_configuration()`, retrieves interface `(0, 0)`, then delegates only descriptor selection to the pure module and constructs the same `BulkTransport`. Legacy `USB_ENDPOINT_IN`, `USB_TRANSFER_TYPE_MASK`, and `USB_TRANSFER_TYPE_BULK` constants remain importable from `pyusb_backend`.
+
+This separation permits tests on fake descriptors and alternative adapters without loading libusb. Maintain the existing `test_pyusb_backend.py` adapter tests alongside `test_usb_endpoints.py`. Do not add new USB retries, endpoint preference heuristics, device ownership changes, or tuning in this refactor. Physical AOA acceptance remains separate.
 
 ## Refactor acceptance checklist
 
