@@ -217,8 +217,8 @@ public class TcpDteServerTest {
         server.start();
 
         try (Socket first = connect()) {
-            send(first, "AT\\r");
-            readUntil(first, "OK\\r\\n");
+            send(first, "AT\r");
+            readUntil(first, "OK\r\n");
             try (Socket refused = connect()) {
                 refused.setSoTimeout(2000);
                 assertEquals(-1, refused.getInputStream().read());
@@ -231,8 +231,8 @@ public class TcpDteServerTest {
         }
         assertEquals(0, server.clientCount());
         try (Socket replacement = connect()) {
-            send(replacement, "AT\\r");
-            readUntil(replacement, "OK\\r\\n");
+            send(replacement, "AT\r");
+            readUntil(replacement, "OK\r\n");
         }
     }
 
