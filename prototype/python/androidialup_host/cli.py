@@ -5,15 +5,12 @@ from __future__ import annotations
 import argparse
 import socket
 import sys
-import time
 from typing import Sequence
 
-from .aoa import AccessoryIdentity, enter_accessory_mode
+from .accessory_discovery import obtain_accessory as _obtain_accessory, wait_for_accessory as _wait_for_accessory
 from .bridge import bridge_socket_to_transport
 from .pyusb_backend import (
-    PyUsbControlDevice,
     PyUsbUnavailable,
-    find_accessory_device,
     load_pyusb,
     open_bulk_transport,
 )
@@ -48,48 +45,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reenumeration-timeout", type=float, default=12.0)
     parser.add_argument("--serial", default="androidialup-host")
     return parser
-
-
-def _wait_for_accessory(core, timeout_seconds: float):
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        device = find_accessory_device(core)
-        if device is not None:
-            return device
-        time.sleep(0.2)
-    return None
-
-
-def _obtain_accessory(core, args):
-    accessory = find_accessory_device(core)
-    if accessory is not None:
-        return accessory
-
-    if args.device is None:
-        raise RuntimeError(
-            "no Android device is already in AOA mode; pass --device VID:PID for the initial USB device"
-        )
-
-    vendor, product = args.device
-    initial = core.find(idVendor=vendor, idProduct=product)
-    if initial is None:
-        raise RuntimeError(f"USB device {vendor:04x}:{product:04x} was not found")
-
-    identity = AccessoryIdentity.default()
-    identity = AccessoryIdentity(
-        manufacturer=identity.manufacturer,
-        model=identity.model,
-        description=identity.description,
-        version=identity.version,
-        uri=identity.uri,
-        serial=args.serial,
-    )
-    protocol = enter_accessory_mode(PyUsbControlDevice(initial), identity)
-    print(f"AOA protocol {protocol}; waiting for Android USB re-enumeration...", file=sys.stderr)
-    accessory = _wait_for_accessory(core, args.reenumeration_timeout)
-    if accessory is None:
-        raise RuntimeError("Android did not re-enumerate in AOA accessory mode before timeout")
-    return accessory
 
 
 def run(argv: Sequence[str] | None = None) -> int:
