@@ -167,7 +167,7 @@ class RelaySession:
 
         if self.state == RelaySessionState.AUTHENTICATED:
             if frame.kind != FrameKind.DIAL_REQUEST:
-                raise ProtocolError("DIAL_REQUEST required while authenticated and idle")
+                raise ProtocolError(f"DIAL_REQUEST required while authenticated and idle (got {frame.kind.name})")
             if frame.call_id == ZERO_ID:
                 raise ProtocolError("DIAL_REQUEST requires nonzero call_id")
             if frame.session_id != ZERO_ID:
