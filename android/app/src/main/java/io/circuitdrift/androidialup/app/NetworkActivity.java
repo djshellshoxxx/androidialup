@@ -7,11 +7,13 @@ import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.view.View;
 
 import io.circuitdrift.androidialup.network.NetworkDiagnosticsSnapshot;
 import io.circuitdrift.androidialup.network.NetworkPolicy;
 
 import java.util.Map;
+import java.util.EnumMap;
 
 /**
  * Developer network screen (I1 network-control plan Task 5): policy picker
@@ -21,6 +23,7 @@ import java.util.Map;
  */
 public final class NetworkActivity extends ServiceActivity {
     private RadioGroup policies;
+    private final Map<NetworkPolicy, Integer> policyViewIds = new EnumMap<>(NetworkPolicy.class);
     private CheckBox override;
     private TextView diagnostics;
     private EditText host;
@@ -39,12 +42,17 @@ public final class NetworkActivity extends ServiceActivity {
         for (NetworkPolicy policy : NetworkPolicy.values()) {
             RadioButton option = new RadioButton(this);
             option.setText(policy.name());
-            option.setId(2000 + policy.ordinal());
+            int viewId = View.generateViewId();
+            option.setId(viewId);
+            option.setTag(policy);
+            policyViewIds.put(policy, viewId);
             policies.addView(option);
         }
         policies.setOnCheckedChangeListener((group, checkedId) -> {
-            if (populating || service == null) return;
-            service.setPolicy(NetworkPolicy.values()[checkedId - 2000]);
+            if (populating || service == null || checkedId == View.NO_ID) return;
+            RadioButton checked = group.findViewById(checkedId);
+            if (checked == null || !(checked.getTag() instanceof NetworkPolicy)) return;
+            service.setPolicy((NetworkPolicy) checked.getTag());
             refresh();
         });
         root.addView(policies);
@@ -90,7 +98,8 @@ public final class NetworkActivity extends ServiceActivity {
     protected void onServiceBound() {
         populating = true;
         RelaySettings settings = service.settings();
-        policies.check(2000 + service.policy().ordinal());
+        Integer selectedId = policyViewIds.get(service.policy());
+        if (selectedId != null) policies.check(selectedId);
         override.setChecked(service.diagnostics().developerOverride());
         host.setText(settings.host);
         port.setText(Integer.toString(settings.port));

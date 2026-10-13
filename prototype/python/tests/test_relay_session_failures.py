@@ -3,11 +3,13 @@ import unittest
 from androidialup_gateway.backend import BackendState
 from androidialup_gateway.loopback import LoopbackBackend
 from androidialup_protocol.liveness import LinkFailure
+from androidialup_protocol.frame import ProtocolError
 from androidialup_protocol.messages import (
     CallTerminated,
     DataBytes,
     DialFailed,
     DialFailure,
+    FlowStatus,
     HangupRequest,
     HangupAck,
     TerminationSource,
@@ -70,6 +72,34 @@ class RelaySessionFailureTests(unittest.TestCase):
         self.assertEqual(session.state, RelaySessionState.AUTHENTICATED)
         backend.dead = False
         self.assertEqual(session.poll(), [])
+
+    def test_late_flow_credit_from_completed_call_does_not_kill_reusable_tls_session(self):
+        backend = CrashingBackend()
+        session = session_with(backend)
+        dial_loopback(session)
+        backend.dead = True
+        self.assertEqual(
+            decoded(session.poll()),
+            [CallTerminated("BACKEND_UNAVAILABLE", TerminationSource.GATEWAY, "BACKEND_FAILED")],
+        )
+        self.assertEqual(session.state, RelaySessionState.AUTHENTICATED)
+
+        # TCP can coalesce/delay flow credit for data delivered before the
+        # terminal frame. This must not tear down the reusable authenticated link.
+        self.assertEqual(
+            session.handle_frame(
+                make_frame(FlowStatus(256 * 1024, 0), call_id=CALL_ID, session_id=SESSION_ID, request_id=0)
+            ),
+            [],
+        )
+        self.assertEqual(session.state, RelaySessionState.AUTHENTICATED)
+
+    def test_idle_flow_status_from_unknown_call_remains_protocol_error(self):
+        session = authenticated_session()
+        with self.assertRaises(ProtocolError):
+            session.handle_frame(
+                make_frame(FlowStatus(256 * 1024, 0), call_id=CALL_ID, session_id=SESSION_ID, request_id=0)
+            )
 
     def test_backend_death_on_write_terminates_call(self):
         backend = CrashingBackend()

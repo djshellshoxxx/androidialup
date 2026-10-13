@@ -71,7 +71,8 @@ class FailureInjectionHarness(unittest.IsolatedAsyncioTestCase):
         if self.relay is not None:
             await self.relay.close()
         if self.process is not None and self.process.returncode is None:
-            self.process.send_signal(signal.SIGCONT)
+            # SIGKILL / TerminateProcess also works for a suspended child;
+            # SIGCONT is not available on native Windows.
             self.process.kill()
             await self.process.wait()
         self.tmp.cleanup()
@@ -200,6 +201,7 @@ class RelayFailureInjectionTests(FailureInjectionHarness):
         await self.assert_single_no_carrier(TRANSPORT_LOSS, max_seconds=1.0)
         self.assertIn(self.session_port.link_failure, TRANSPORT_LOSS)
 
+    @unittest.skipUnless(hasattr(signal, "SIGSTOP"), "requires POSIX process suspension")
     async def test_relay_stops_responding_heartbeat_timeout(self):
         await self.start_modem(await self.start_relay_process())
         await self.establish_call_with_data()
@@ -237,7 +239,11 @@ class RelayFailureInjectionTests(FailureInjectionHarness):
         self.backends[0].dead = True  # gateway process death, detected by the relay's backend poll
         await self.assert_single_no_carrier(LinkFailure("BACKEND_UNAVAILABLE", "BACKEND_FAILED"), max_seconds=1.0)
         # The relay link itself survives a gateway failure (S1 section 10: socket reusable).
-        self.assertIsNone(self.session_port.link_failure)
+        self.assertIsNone(
+            self.session_port.link_failure,
+            f"relay_close_records={self.relay.close_records!r}; "
+            f"relay_sessions={len(self.relay.connections)}",
+        )
         self.assertEqual(self.relay.close_records, [])
         self.assertEqual(self.backends[0].state, BackendState.CLOSED)
         self.backends[0].dead = False  # gateway restarted

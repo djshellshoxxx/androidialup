@@ -25,7 +25,7 @@ def _load_vectors():
 
 class ProtocolVectorTests(unittest.TestCase):
     def test_committed_vectors_are_up_to_date(self):
-        with open(gen_adup_vectors.VECTORS_PATH, "r", encoding="utf-8", newline="") as fh:
+        with open(gen_adup_vectors.VECTORS_PATH, "r", encoding="utf-8") as fh:
             committed = fh.read()
         self.assertEqual(committed, gen_adup_vectors.render(),
                          "tests/vectors/adup_v1_vectors.txt is stale; rerun tools/gen_adup_vectors.py")
