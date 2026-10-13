@@ -15,16 +15,25 @@ Updated: 2026-10-13. Status: incremental, compatibility-first. Scope is the Andr
 | Python protocol | `prototype/python/androidialup_protocol` | ADUP transport, codecs, flow control and liveness | Mostly cohesive; use Java/Python golden vectors as contract. |
 | Python relay/gateway | `androidialup_relay`, `androidialup_gateway` | Relay server/session, backend lifecycle | Keep server admission and backend failures isolated from frame semantics. |
 | Python modem | `androidialup_modem` | AT command and modem DTE | Preserve parity with JVM modem and error taxonomy. |
-| Python PC host | `androidialup_host` | AOA control, PyUSB, host bridge and CLI | Low-risk extraction started: `accessory_discovery.py`. |
+| Python PC host | `androidialup_host` | AOA discovery, PyUSB adapter, host bridge, TCP listener and CLI | Discovery extracted into `accessory_discovery.py`; `tcp_listener.py` now owns one-client TCP lifetime with `cli.run()` as composition root. |
 
 ## Approved incremental sequence
 
-1. **First safe extraction (in progress):** move AOA device discovery, optional initial VID:PID switch and re-enumeration polling from `androidialup_host.cli` to `androidialup_host.accessory_discovery`. Keep `cli._obtain_accessory` and `cli._wait_for_accessory` aliases, existing argument names, diagnostics, timeout semantics and ownership. Prove with fake USB tests, entire Python suite on Linux + Windows, and untouched Android workflow checks.
-2. **PC host next:** split CLI option validation from socket/server lifecycle, retaining `run(argv)`, parser flags, stderr messages and exact exit codes. Add executable CLI tests that exercise defaults, USB unavailable, malformed IDs and socket/bridge failure. Do not add real USB driver dependencies to the normal test suite.
+1. **Complete, PR #24:** USB accessory discovery, initial VID:PID AOA mode-switch and re-enumeration polling now live in `androidialup_host.accessory_discovery`. `cli._obtain_accessory` and `cli._wait_for_accessory` remain as compatibility aliases. Linux and cross-platform CI passed.
+2. **In progress, this PR:** `androidialup_host.tcp_listener.serve_one_client(host, port, transport, bridge)` owns exactly one TCP socket, accepted-client lifetime and bridge-failure reporting. `cli.run(argv)` remains the composition root and supplies the existing `bridge_socket_to_transport` implementation. CLI option parsing/validation, USB initialization, stderr output and exit codes remain intact. Fake-socket tests characterize success, bind failure, bridge failure, close/cleanup and the existing CLI entry point on Linux and Windows. Future extraction of pure CLI argument validation is optional only if complexity warrants its own module.
 3. **Android service:** first characterize service create/start/destroy, USB permission callback, network policy saves and DTE port restarts with instrumented tests. Then extract preference/notification or lifecycle coordination **as one independent PR per boundary**. Retain `ModemService` as the compatibility façade.
 4. **Android UI:** isolate input parsing and view models from `DialerActivity` and `NetworkActivity` only once UI state behavior is covered. Avoid changing public extras, permissions and exported components.
 5. **Session and relay:** only after coverage for delayed frames, dial/hangup idempotence, authentication failures, flow control, queue bounds and cancellations. Extract state transitions through documented narrow interfaces; freeze golden vectors and taxonomy as acceptance criteria.
 6. **Soft modem / SIP and audio features:** add codec, media transport, PHY/DSP, gateway adapters and routing as separately compiled/tested modules from the first implementation. The protocol and audio/data planes must remain independently testable and avoid allocation/locking in real-time callbacks.
+
+## PC listener module interface and invariants
+
+- **Provider:** `androidialup_host.tcp_listener.serve_one_client(host, port, transport, bridge)`.
+- **Consumer:** `androidialup_host.cli.run(argv)` passes the configured endpoint, already-open USB transport and existing bridge function.
+- **Lifecycle ownership:** The listener owns and closes its TCP listening/accepted sockets. The caller owns USB transport. It serves **one** accepted client, matching prior behavior; reconnection/multiple clients require a separate feature and spec.
+- **Error contract:** Return `0` for completed bridge; return `3` and print the original diagnostic on bridge `OSError`/`RuntimeError`; propagate socket bind/listen/accept failures. Do not change those contracts during this refactor.
+- **Dependency direction:** CLI (options and composition) → TCP listener (socket lifetime) → injected bridge function (byte forwarding). The listener does not know PyUSB, protocol frames or Android state and can be tested without USB hardware.
+- **Tests:** `prototype/python/tests/test_host_cli.py` checks unchanged CLI behavior; `test_host_listener.py` checks the extracted interface, socket cleanup and error paths. Run full Linux and native Windows Python, Android lint/release build and Android core tests as applicable.
 
 ## Refactor acceptance checklist
 
