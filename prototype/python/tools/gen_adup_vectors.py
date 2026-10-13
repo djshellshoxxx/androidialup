@@ -187,7 +187,7 @@ def main(argv: list[str]) -> int:
         return 0
     if "--check" in argv:
         try:
-            with open(VECTORS_PATH, "r", encoding="utf-8", newline="") as fh:
+            with open(VECTORS_PATH, "r", encoding="utf-8") as fh:
                 current = fh.read()
         except FileNotFoundError:
             current = ""
