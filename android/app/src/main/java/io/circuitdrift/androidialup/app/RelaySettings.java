@@ -37,12 +37,7 @@ final class RelaySettings {
 
     static RelaySettings load(Context context) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        NetworkPolicy policy;
-        try {
-            policy = NetworkPolicy.valueOf(prefs.getString("policy", NetworkPolicy.AUTOMATIC.name()));
-        } catch (IllegalArgumentException unknown) {
-            policy = NetworkPolicy.AUTOMATIC;
-        }
+        NetworkPolicy policy = parsePolicy(prefs.getString("policy", NetworkPolicy.AUTOMATIC.name()));
 
         String deviceSecret = "";
         try {
@@ -60,6 +55,16 @@ final class RelaySettings {
                 prefs.getString("ca_pem", ""),
                 prefs.getInt("dte_port", 2323),
                 policy);
+    }
+
+    /** A null, removed, or obsolete preference must never crash the settings screen. */
+    static NetworkPolicy parsePolicy(String storedValue) {
+        if (storedValue == null) return NetworkPolicy.AUTOMATIC;
+        try {
+            return NetworkPolicy.valueOf(storedValue);
+        } catch (IllegalArgumentException unknown) {
+            return NetworkPolicy.AUTOMATIC;
+        }
     }
 
     void save(Context context) {
