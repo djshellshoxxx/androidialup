@@ -127,6 +127,83 @@ public final class StreamDteSessionTest {
         assertTrue(session.isClosed());
     }
 
+
+    @Test
+    public void stalledModemInputQueueIsBoundedAndDisconnects() throws Exception {
+        BurstingInputStream input = new BurstingInputStream();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        FakeSessionPort port = new FakeSessionPort();
+        AtomicReference<Executor> modemOwner = new AtomicReference<>();
+        CountDownLatch releaseOwner = new CountDownLatch(1);
+        CountDownLatch closed = new CountDownLatch(1);
+        AtomicReference<String> closeReason = new AtomicReference<>();
+
+        StreamDteSession session = new StreamDteSession(input, output,
+                (writer, executor) -> {
+                    modemOwner.set(executor);
+                    return new ModemController(port, writer, "stream-limit-test");
+                },
+                new StreamDteSession.Listener() {
+                    @Override public void onClosed(String reason) {
+                        closeReason.set(reason);
+                        closed.countDown();
+                    }
+                }, 10, 1024, 8, System::nanoTime, 64);
+
+        // Stall the sole modem owner so inbound DTE chunks cannot be consumed.
+        CountDownLatch stalled = new CountDownLatch(1);
+        modemOwner.get().execute(() -> {
+            stalled.countDown();
+            try {
+                releaseOwner.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        assertTrue(stalled.await(2, TimeUnit.SECONDS));
+        try {
+            session.start();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (!session.isClosed() && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertTrue("unbounded inbound DTE input was not rejected", session.isClosed());
+        } finally {
+            releaseOwner.countDown();
+        }
+        assertTrue("disconnect callback not received", closed.await(3, TimeUnit.SECONDS));
+        assertEquals("DTE_INPUT_QUEUE_OVERFLOW", closeReason.get());
+        assertTrue(input.closed);
+    }
+
+    @Test
+    public void invalidInboundByteLimitIsRejected() {
+        org.junit.Assert.assertThrows(IllegalArgumentException.class, () ->
+                new StreamDteSession(new java.io.ByteArrayInputStream(new byte[0]),
+                        new ByteArrayOutputStream(),
+                        (writer, executor) -> new ModemController(new FakeSessionPort(), writer, "limit-test"),
+                        null, 10, 1024, 8, System::nanoTime, 0));
+    }
+
+    private static final class BurstingInputStream extends InputStream {
+        volatile boolean closed;
+
+        @Override public int read() {
+            return closed ? -1 : 'A';
+        }
+
+        @Override public int read(byte[] b, int off, int len) {
+            if (closed) return -1;
+            int size = Math.min(len, 32);
+            Arrays.fill(b, off, off + size, (byte) 'A');
+            return size;
+        }
+
+        @Override public void close() {
+            closed = true;
+        }
+    }
+
     private static String readUntil(InputStream input, String needle, long timeoutMs) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
         ByteArrayOutputStream received = new ByteArrayOutputStream();
