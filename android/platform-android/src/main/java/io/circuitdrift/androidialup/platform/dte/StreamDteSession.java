@@ -278,11 +278,19 @@ public final class StreamDteSession implements AutoCloseable {
 
         try {
             modemExecutor.execute(() -> {
-                if (disconnectDelivered.compareAndSet(false, true)) {
-                    controller.onDteDisconnected();
+                try {
+                    if (disconnectDelivered.compareAndSet(false, true)) {
+                        // Even a failing relay backend must not strand the stream lifecycle.
+                        try {
+                            controller.onDteDisconnected();
+                        } catch (RuntimeException ignored) {
+                            // Transport teardown and listener notification are mandatory.
+                        }
+                    }
+                    listener.onClosed(reason);
+                } finally {
+                    modemExecutor.shutdown();
                 }
-                listener.onClosed(reason);
-                modemExecutor.shutdown();
             });
         } catch (RejectedExecutionException rejected) {
             listener.onClosed(reason);
