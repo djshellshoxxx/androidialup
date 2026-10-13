@@ -26,6 +26,8 @@ Scope: public `djshellshoxxx/androidialup` repository, Android/Java control plan
 7. **P1 / native Windows tests: golden vector line endings.** Git checkout converts LF to CRLF under Windows; raw newline comparison reported stale generated vectors. Normalize at the text-reading boundary, leaving generated payload bytes unchanged.
 8. **P1 / Windows host: reader teardown hang.** Shutdown of a read-half did not always wake a blocked socket receive on Windows when USB reached EOF. Replace indefinite read with a bounded `select.select` wait, with regression coverage.
 
+9. **P2 / flaky JVM test caught on combined PR run.** `StreamDteSessionTest.modemHangupExceptionCannotSuppressStreamClosedNotification` assumed only two terminal reason strings on `PipedInputStream` shutdown. On another Actions runner scheduling, its close callback fired but a different `DTE_*` reason was reported; Android Core Tests run **38475840767** failed. PR #23 (`2d0fd3c4`) corrected this test to require the verified lifecycle properties and a `DTE_*` reason without asserting an incidental pipe subtype. Its PR Android Core Tests run **38476163569** passed. This is a regression-test fix, not a runtime behavior change.
+
 ## Remaining risks and plausible build-failure causes
 
 | Priority | Evidence | Problem / next gate |
