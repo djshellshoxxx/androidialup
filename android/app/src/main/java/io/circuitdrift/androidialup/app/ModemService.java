@@ -337,10 +337,18 @@ public final class ModemService extends Service {
             registerReceiver(usbPermissionReceiver, permission, Context.RECEIVER_NOT_EXPORTED);
             registerReceiver(usbAttachReceiver, attach, Context.RECEIVER_EXPORTED);
         } else {
-            registerReceiver(usbPermissionReceiver, permission);
-            registerReceiver(usbAttachReceiver, attach);
+            registerLegacyUsbReceivers(permission, attach);
         }
         usbReceiversRegistered = true;
+    }
+
+    // Android < 13 does not offer the receiver export flags. The current-version
+    // branch above explicitly selects NOT_EXPORTED for the app's permission
+    // callback, so suppress only the legacy API call lint false positive.
+    @android.annotation.SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private void registerLegacyUsbReceivers(IntentFilter permission, IntentFilter attach) {
+        registerReceiver(usbPermissionReceiver, permission);
+        registerReceiver(usbAttachReceiver, attach);
     }
 
     private void unregisterUsbReceivers() {
