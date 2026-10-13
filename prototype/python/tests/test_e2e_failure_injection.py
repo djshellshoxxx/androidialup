@@ -239,7 +239,11 @@ class RelayFailureInjectionTests(FailureInjectionHarness):
         self.backends[0].dead = True  # gateway process death, detected by the relay's backend poll
         await self.assert_single_no_carrier(LinkFailure("BACKEND_UNAVAILABLE", "BACKEND_FAILED"), max_seconds=1.0)
         # The relay link itself survives a gateway failure (S1 section 10: socket reusable).
-        self.assertIsNone(self.session_port.link_failure)
+        self.assertIsNone(
+            self.session_port.link_failure,
+            f"relay_close_records={self.relay.close_records!r}; "
+            f"relay_sessions={len(self.relay.connections)}",
+        )
         self.assertEqual(self.relay.close_records, [])
         self.assertEqual(self.backends[0].state, BackendState.CLOSED)
         self.backends[0].dead = False  # gateway restarted
