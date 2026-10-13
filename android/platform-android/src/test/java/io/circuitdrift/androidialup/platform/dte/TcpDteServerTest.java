@@ -17,6 +17,7 @@ import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
@@ -200,6 +201,89 @@ public class TcpDteServerTest {
         long deadline = System.currentTimeMillis() + 2000;
         while (server.clientCount() > 0 && System.currentTimeMillis() < deadline) Thread.sleep(10);
         assertEquals(0, server.clientCount());
+    }
+
+
+    @Test
+    public void clientLimitRejectsExtraConnectionAndReleasesSlotAfterDisconnect() throws Exception {
+        server.close();
+        server = new TcpDteServer(InetAddress.getLoopbackAddress(), 0, client -> {
+            FakeSession session = new FakeSession(client.modemExecutor());
+            ModemController controller = new ModemController(session, client.writer(), "tcp-limit-test");
+            session.listener = controller;
+            return controller;
+        }, null, 5, TcpDteServer.DEFAULT_MAX_QUEUED_DTE_BYTES,
+                System::nanoTime, 1, TcpDteServer.DEFAULT_MAX_PENDING_INPUT_BYTES);
+        server.start();
+
+        try (Socket first = connect()) {
+            send(first, "AT\r");
+            readUntil(first, "OK\r\n");
+            try (Socket refused = connect()) {
+                refused.setSoTimeout(2000);
+                assertEquals(-1, refused.getInputStream().read());
+            }
+            assertEquals(1, server.clientCount());
+        }
+        long deadline = System.currentTimeMillis() + 3000;
+        while (server.clientCount() != 0 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+        assertEquals(0, server.clientCount());
+        try (Socket replacement = connect()) {
+            send(replacement, "AT\r");
+            readUntil(replacement, "OK\r\n");
+        }
+    }
+
+    @Test
+    public void stalledModemCannotAccumulateUnboundedInboundDteData() throws Exception {
+        server.close();
+        CountDownLatch factoryEntered = new CountDownLatch(1);
+        CountDownLatch allowFactory = new CountDownLatch(1);
+        server = new TcpDteServer(InetAddress.getLoopbackAddress(), 0, client -> {
+            factoryEntered.countDown();
+            try {
+                if (!allowFactory.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("test factory timed out");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted", interrupted);
+            }
+            FakeSession session = new FakeSession(client.modemExecutor());
+            ModemController controller = new ModemController(session, client.writer(), "tcp-overflow-test");
+            session.listener = controller;
+            return controller;
+        }, new TcpDteServer.Listener() {
+            @Override public void onClientClosed(TcpDteServer.DteClient client, String reason) {
+                closedReasons.add(reason);
+            }
+        }, 5, TcpDteServer.DEFAULT_MAX_QUEUED_DTE_BYTES, System::nanoTime, 1, 64);
+        server.start();
+
+        try (Socket dte = connect()) {
+            assertTrue(factoryEntered.await(2, TimeUnit.SECONDS));
+            byte[] input = new byte[4096];
+            java.util.Arrays.fill(input, (byte) 'A');
+            dte.getOutputStream().write(input);
+            dte.getOutputStream().flush();
+            // Keep the controller blocked while the DTE read thread queues incoming input.
+            Thread.sleep(100);
+        } finally {
+            allowFactory.countDown();
+        }
+        assertEquals("DTE_INPUT_OVERFLOW", closedReasons.poll(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    public void invalidClientAndInboundLimitsAreRejected() {
+        org.junit.Assert.assertThrows(IllegalArgumentException.class, () ->
+                new TcpDteServer(InetAddress.getLoopbackAddress(), 0, client -> null,
+                        null, 5, 1024, System::nanoTime, 0, 1024));
+        org.junit.Assert.assertThrows(IllegalArgumentException.class, () ->
+                new TcpDteServer(InetAddress.getLoopbackAddress(), 0, client -> null,
+                        null, 5, 1024, System::nanoTime, 1, 0));
     }
 
     @Test

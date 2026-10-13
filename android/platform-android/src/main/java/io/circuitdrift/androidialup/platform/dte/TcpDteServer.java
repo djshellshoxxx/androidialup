@@ -60,6 +60,10 @@ public final class TcpDteServer implements AutoCloseable {
     public static final long DEFAULT_TIMER_TICK_MS = 10;
     /** Maximum modem-to-DTE bytes queued for one client before the client is disconnected. */
     public static final int DEFAULT_MAX_QUEUED_DTE_BYTES = 1024 * 1024;
+    /** Maximum simultaneous developer DTE connections; each has dedicated I/O threads. */
+    public static final int DEFAULT_MAX_CLIENTS = 8;
+    /** Maximum incoming bytes waiting for the per-client modem executor. */
+    public static final int DEFAULT_MAX_PENDING_INPUT_BYTES = 1024 * 1024;
     private static final int READ_BUFFER_BYTES = 64 * 1024;
 
     /** Creates one controller per client. Called on that client's modem thread. */
@@ -80,6 +84,8 @@ public final class TcpDteServer implements AutoCloseable {
     private final Listener listener;
     private final long timerTickMs;
     private final int maxQueuedDteBytes;
+    private final int maxClients;
+    private final int maxPendingInputBytes;
     private final LongSupplier nanoClock;
     private final Set<Client> clients = ConcurrentHashMap.newKeySet();
     private final AtomicInteger clientIds = new AtomicInteger();
@@ -105,6 +111,14 @@ public final class TcpDteServer implements AutoCloseable {
      */
     public TcpDteServer(InetAddress bindAddress, int port, ControllerFactory factory, Listener listener,
                         long timerTickMs, int maxQueuedDteBytes, LongSupplier nanoClock) {
+        this(bindAddress, port, factory, listener, timerTickMs, maxQueuedDteBytes,
+                nanoClock, DEFAULT_MAX_CLIENTS, DEFAULT_MAX_PENDING_INPUT_BYTES);
+    }
+
+    /** As above, with explicit global client and per-client pending inbound byte limits. */
+    public TcpDteServer(InetAddress bindAddress, int port, ControllerFactory factory, Listener listener,
+                        long timerTickMs, int maxQueuedDteBytes, LongSupplier nanoClock,
+                        int maxClients, int maxPendingInputBytes) {
         this.bindAddress = Objects.requireNonNull(bindAddress, "bindAddress");
         if (port < 0 || port > 0xffff) throw new IllegalArgumentException("port out of range");
         this.requestedPort = port;
@@ -113,6 +127,10 @@ public final class TcpDteServer implements AutoCloseable {
         this.timerTickMs = Math.max(1, timerTickMs);
         if (maxQueuedDteBytes <= 0) throw new IllegalArgumentException("maxQueuedDteBytes must be positive");
         this.maxQueuedDteBytes = maxQueuedDteBytes;
+        if (maxClients <= 0) throw new IllegalArgumentException("maxClients must be positive");
+        if (maxPendingInputBytes <= 0) throw new IllegalArgumentException("maxPendingInputBytes must be positive");
+        this.maxClients = maxClients;
+        this.maxPendingInputBytes = maxPendingInputBytes;
         this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
     }
 
@@ -180,6 +198,12 @@ public final class TcpDteServer implements AutoCloseable {
                 return;
             }
             try {
+                // The accept loop is the only thread that adds new clients; a limit checked
+                // here prevents creating additional modem executors and reader/writer threads.
+                if (clients.size() >= maxClients) {
+                    closeQuietly(accepted);
+                    continue;
+                }
                 accepted.setTcpNoDelay(true);
                 Client client = new Client(clientIds.incrementAndGet(), accepted);
                 clients.add(client);
@@ -225,6 +249,7 @@ public final class TcpDteServer implements AutoCloseable {
         private final ScheduledExecutorService modem;
         private final BlockingQueue<byte[]> outbound = new ArrayBlockingQueue<>(4096);
         private final AtomicLong queuedBytes = new AtomicLong();
+        private final AtomicLong pendingInputBytes = new AtomicLong();
         private final List<Runnable> closeHooks = new CopyOnWriteArrayList<>();
         private final Thread reader;
         private final Thread writer;
@@ -280,7 +305,24 @@ public final class TcpDteServer implements AutoCloseable {
                     if (n < 0) break;
                     if (n == 0) continue;
                     byte[] chunk = Arrays.copyOf(buffer, n);
-                    if (!post(() -> feed(chunk))) return;
+                    if (pendingInputBytes.addAndGet(n) > maxPendingInputBytes) {
+                        pendingInputBytes.addAndGet(-n);
+                        // Stop ingress immediately: cleanup and modem disconnect still run
+                        // on the serialized modem owner once any stalled work completes.
+                        closeQuietly(socket);
+                        requestClose("DTE_INPUT_OVERFLOW");
+                        return;
+                    }
+                    if (!post(() -> {
+                        try {
+                            feed(chunk);
+                        } finally {
+                            pendingInputBytes.addAndGet(-chunk.length);
+                        }
+                    })) {
+                        pendingInputBytes.addAndGet(-n);
+                        return;
+                    }
                 }
             } catch (IOException failure) {
                 reason = "DTE_DISCONNECTED";
