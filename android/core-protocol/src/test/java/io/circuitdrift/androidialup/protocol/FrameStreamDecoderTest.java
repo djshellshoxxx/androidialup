@@ -44,6 +44,43 @@ class FrameStreamDecoderTest {
         assertThrows(ProtocolException.class, () -> decoder.feed(new byte[65]));
     }
 
+
+    @Test
+    void aggregateOfValidFramesMayExceedBoundedBuffer() {
+        var frames = List.of(
+                AduFrame.simple(FrameKind.PING),
+                AduFrame.simple(FrameKind.PONG),
+                AduFrame.simple(FrameKind.PING),
+                AduFrame.simple(FrameKind.PONG));
+        var bytes = new ByteArrayOutputStream();
+        frames.forEach(frame -> bytes.writeBytes(FrameCodec.encode(frame)));
+        var decoder = new FrameStreamDecoder(FrameCodec.MAX_PAYLOAD, 64);
+        assertEquals(frames, decoder.feed(bytes.toByteArray()));
+        assertEquals(0, decoder.bufferedBytes());
+    }
+
+    @Test
+    void partialThenLargeBatchStillDecodesFrames() {
+        var frames = List.of(AduFrame.simple(FrameKind.PING),
+                AduFrame.simple(FrameKind.PONG), AduFrame.simple(FrameKind.PING));
+        var bytes = new ByteArrayOutputStream();
+        frames.forEach(frame -> bytes.writeBytes(FrameCodec.encode(frame)));
+        byte[] encoded = bytes.toByteArray();
+        var decoder = new FrameStreamDecoder(FrameCodec.MAX_PAYLOAD, 64);
+        assertTrue(decoder.feed(java.util.Arrays.copyOfRange(encoded, 0, 20)).isEmpty());
+        assertEquals(frames, decoder.feed(java.util.Arrays.copyOfRange(encoded, 20, encoded.length)));
+        assertEquals(0, decoder.bufferedBytes());
+    }
+
+    @Test
+    void oversizedIndividualFrameStillExceedsBoundedBuffer() {
+        var decoder = new FrameStreamDecoder(FrameCodec.MAX_PAYLOAD, 64);
+        byte[] encoded = FrameCodec.encode(new AduFrame(
+                FrameKind.PING, 0, AduFrame.ZERO_ID, AduFrame.ZERO_ID, 0, new byte[11]));
+        var failure = assertThrows(ProtocolException.class, () -> decoder.feed(encoded));
+        assertTrue(failure.getMessage().contains("frame exceeds stream buffer"));
+    }
+
     @Test
     void declaredOversizePayloadIsRejectedBeforeAllocation() {
         byte[] header = FrameCodec.encode(AduFrame.simple(FrameKind.PING));

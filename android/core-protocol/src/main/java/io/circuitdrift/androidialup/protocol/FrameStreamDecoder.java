@@ -30,41 +30,49 @@ public final class FrameStreamDecoder {
 
     public List<AduFrame> feed(byte[] input) {
         if (input == null) throw new NullPointerException("input");
-        if ((long) buffer.length + input.length > maxBuffer) {
-            throw new ProtocolException("stream buffer limit exceeded");
-        }
-
-        byte[] joined = Arrays.copyOf(buffer, buffer.length + input.length);
-        System.arraycopy(input, 0, joined, buffer.length, input.length);
-        buffer = joined;
-
         List<AduFrame> frames = new ArrayList<>();
-        while (buffer.length >= FrameCodec.FIXED_HEADER_LEN) {
-            int headerLen = ((buffer[8] & 0xff) << 8) | (buffer[9] & 0xff);
-            long payloadLen = ((long) (buffer[10] & 0xff) << 24)
-                    | ((long) (buffer[11] & 0xff) << 16)
-                    | ((long) (buffer[12] & 0xff) << 8)
-                    | (long) (buffer[13] & 0xff);
+        int offset = 0;
 
-            if (headerLen < FrameCodec.FIXED_HEADER_LEN) {
-                throw new ProtocolException("header shorter than fixed header");
+        // A transport read may contain multiple frames whose aggregate size
+        // exceeds maxBuffer. Bound unconsumed bytes rather than the input batch.
+        while (offset < input.length) {
+            int available = maxBuffer - buffer.length;
+            if (available <= 0) {
+                throw new ProtocolException("stream buffer limit exceeded");
             }
-            if (headerLen != FrameCodec.FIXED_HEADER_LEN) {
-                throw new ProtocolException("header extensions are not supported in Beta 0.1");
-            }
-            if (payloadLen > maxPayload) {
-                throw new ProtocolException("payload exceeds negotiated maximum");
-            }
-            long totalLong = (long) headerLen + payloadLen;
-            if (totalLong > maxBuffer) {
-                throw new ProtocolException("frame exceeds stream buffer limit");
-            }
-            int total = (int) totalLong;
-            if (buffer.length < total) break;
+            int take = Math.min(available, input.length - offset);
+            byte[] joined = Arrays.copyOf(buffer, buffer.length + take);
+            System.arraycopy(input, offset, joined, buffer.length, take);
+            buffer = joined;
+            offset += take;
 
-            FrameCodec.Decoded decoded = FrameCodec.decode(Arrays.copyOf(buffer, total), maxPayload);
-            frames.add(decoded.frame());
-            buffer = Arrays.copyOfRange(buffer, decoded.bytesConsumed(), buffer.length);
+            while (buffer.length >= FrameCodec.FIXED_HEADER_LEN) {
+                int headerLen = ((buffer[8] & 0xff) << 8) | (buffer[9] & 0xff);
+                long payloadLen = ((long) (buffer[10] & 0xff) << 24)
+                        | ((long) (buffer[11] & 0xff) << 16)
+                        | ((long) (buffer[12] & 0xff) << 8)
+                        | (long) (buffer[13] & 0xff);
+
+                if (headerLen < FrameCodec.FIXED_HEADER_LEN) {
+                    throw new ProtocolException("header shorter than fixed header");
+                }
+                if (headerLen != FrameCodec.FIXED_HEADER_LEN) {
+                    throw new ProtocolException("header extensions are not supported in Beta 0.1");
+                }
+                if (payloadLen > maxPayload) {
+                    throw new ProtocolException("payload exceeds negotiated maximum");
+                }
+                long totalLong = (long) headerLen + payloadLen;
+                if (totalLong > maxBuffer) {
+                    throw new ProtocolException("frame exceeds stream buffer limit");
+                }
+                int total = (int) totalLong;
+                if (buffer.length < total) break;
+
+                FrameCodec.Decoded decoded = FrameCodec.decode(Arrays.copyOf(buffer, total), maxPayload);
+                frames.add(decoded.frame());
+                buffer = Arrays.copyOfRange(buffer, decoded.bytesConsumed(), buffer.length);
+            }
         }
         return List.copyOf(frames);
     }
