@@ -37,9 +37,15 @@ class RelayTcpServer:
         timeouts: TimeoutConfig = DEFAULT_TIMEOUTS,
         clock: Clock = monotonic,
         backend_poll_interval: float = 0.05,
+        max_clients: int = 64,
+        max_close_records: int = 1024,
     ) -> None:
         if session_factory is not None and credential_store is not None:
             raise ValueError("pass either session_factory or credential_store, not both")
+        if max_clients < 1:
+            raise ValueError("max_clients must be at least 1")
+        if max_close_records < 0:
+            raise ValueError("max_close_records must not be negative")
         self.host = host
         self.port = port
         self.ssl_context = ssl_context
@@ -54,6 +60,8 @@ class RelayTcpServer:
         self.timeouts = timeouts
         self.clock = clock
         self.backend_poll_interval = backend_poll_interval
+        self.max_clients = max_clients
+        self.max_close_records = max_close_records
         #: One S1 terminal reason per finished client connection, in close order.
         self.close_records: list[LinkFailure] = []
         #: Live client connections (diagnostics and failure injection).
@@ -95,23 +103,46 @@ class RelayTcpServer:
             await server.wait_closed()
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # Admission happens before the first await, so connected clients cannot race past
+        # the resource bound within this event loop. Reject before allocating a session.
+        if len(self.connections) >= self.max_clients:
+            writer.close()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), self.timeouts.disconnect_grace)
+            except (asyncio.TimeoutError, OSError, ssl.SSLError):
+                transport = getattr(writer, "transport", None)
+                if transport is not None:
+                    transport.abort()
+            return
         task = asyncio.current_task()
         if task is not None:
             self._client_tasks.add(task)
         connection = AsyncFramedConnection(reader, writer)
         self.connections.add(connection)
-        session = self.session_factory()
+        session: RelaySession | None = None
         failure: LinkFailure | None = None
         try:
+            session = self.session_factory()
             failure = await self._serve(connection, session)
         except asyncio.CancelledError:
             failure = LinkFailure("RELAY_UNAVAILABLE", "RELAY_SHUTDOWN")
             raise
+        except Exception:
+            # A broken custom session factory or an unexpected session failure must
+            # not leak this connection and permanently consume an admission slot.
+            failure = LinkFailure("INTERNAL_ERROR", "SESSION_ERROR")
         finally:
             if failure is None:
                 failure = LinkFailure("INTERNAL_ERROR")
-            session.abort(failure)
+            if session is not None:
+                try:
+                    session.abort(failure)
+                except Exception:
+                    # Release transport resources even if backend shutdown fails.
+                    pass
             self.close_records.append(failure)
+            if len(self.close_records) > self.max_close_records:
+                del self.close_records[:len(self.close_records) - self.max_close_records]
             self.connections.discard(connection)
             if failure.detail in {DETAIL_HEARTBEAT_TIMEOUT, DETAIL_TRANSPORT_ERROR}:
                 connection.abort()  # peer unresponsive or transport broken

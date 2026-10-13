@@ -30,7 +30,7 @@ The core protocol will be transport-independent so later work can add V.150.1-st
 - `docs/research/SOURCE_INVENTORY.md` — controlled research database with confidence classification.
 - `docs/research/INITIAL_FINDINGS.md` — early synthesis and feasibility conclusions.
 - `docs/spec/BETA_0_1_ARCHITECTURE.md` — implementation architecture for the first beta.
-- `docs/spec/PROTOCOL_AND_MODULE_CONTRACTS.md` — wire framing and subsystem boundaries.
+- `docs/spec/S1_WIRE_PROTOCOL.md` and `docs/spec/S1_SPEC_FREEZE.md` — wire framing, subsystem boundaries, and frozen implementation requirements.
 - `docs/experiments/EXPERIMENT_PLAN.md` — experiments required before stronger interoperability claims.
 - `docs/PROJECT_PLAN.md` — staged implementation and validation plan.
 
@@ -40,11 +40,11 @@ Important design decisions should prefer, in order: official standards, original
 
 ## Scope status
 
-This repository currently contains the research/specification foundation. Coding should begin only for modules whose API contracts and validation criteria have been written down.
+The Python reference and Android control-plane/USB accessory implementations exist. The current main branch has passing automated Python and Android test workflows, but USB and selected-network acceptance on physical devices is still outstanding. The SIP trunk gateway, media/VBD path, softmodem PHY, and mobility phases are not implemented. See `docs/PROJECT_PLAN.md` and `docs/implementation/I2_AOA_STATUS.md` for acceptance gates.
 ## Building and installing the Android app
 
-> **Current state.** The Android app builds and runs, but it is an early
-> developer build. It needs a reachable relay (the planned hosted SIP-trunk
+> **Current state.** The Android app compiles in CI, but it is an early
+> developer build; successful runtime behavior on a physical phone is not yet established by the available acceptance evidence. It needs a reachable relay (the planned hosted SIP-trunk
 > gateway) before it can place a real call, so a fresh install will open and
 > show its screens but will not connect to anything yet. Treat a first install
 > as confirming the app runs on your hardware, not as a working modem.
@@ -61,7 +61,7 @@ SDK and a compatible JDK). Then clone this branch:
 ```bash
 git clone https://github.com/djshellshoxxx/androidialup.git
 cd androidialup
-git checkout claude/gifted-shannon-q2sjwr
+git switch main
 ```
 
 ### 2. Build the APK
@@ -97,9 +97,9 @@ and allow installing from this source when prompted.
 
 ### What the app does today
 
-It opens to a dialer screen and a network screen (showing the selected
+The current source provides a dialer screen and network screen (showing the selected
 Wi-Fi/cellular network and policy). The dialer and the computer-facing TCP DTE
-port work locally; dialing a remote modem requires the relay/gateway, which is
+port are implemented and covered by available tests; dialing a remote modem requires the relay/gateway, which is
 tracked as Phase I5 in `docs/PROJECT_PLAN.md`. Reaching a legacy modem is done
 through a hosted SIP trunk over IP — see
 `docs/spec/S1_GATEWAY_BACKEND.md` (section 4b) — not an analog line, and never
