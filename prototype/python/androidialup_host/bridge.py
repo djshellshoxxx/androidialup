@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import select
 import socket
 import threading
 from typing import Protocol
@@ -44,7 +45,13 @@ def bridge_socket_to_transport(
 
     def pc_to_usb() -> None:
         try:
-            while True:
+            while not usb_done.is_set():
+                # On Windows, shutdown(SHUT_RD) on another thread does not always
+                # release a blocking recv(). Use bounded readiness polling so USB EOF
+                # can stop the PC reader without hanging bridge teardown.
+                ready, _, _ = select.select([endpoint], [], [], 0.1)
+                if not ready:
+                    continue
                 data = endpoint.recv(chunk_size)
                 if not data:
                     return
