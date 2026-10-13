@@ -12,6 +12,7 @@ import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.view.View;
 
 import io.circuitdrift.androidialup.modem.ModemSnapshot;
 import io.circuitdrift.androidialup.modem.ModemState;
@@ -24,6 +25,8 @@ import io.circuitdrift.androidialup.platform.dialer.TestList;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Developer dialer (S1_DIALER_GUI): one operator-chosen destination, dial method, per-call
@@ -39,6 +42,7 @@ public final class DialerActivity extends ServiceActivity implements ModemServic
     private TextView console;
     private EditText target;
     private RadioGroup method;
+    private final Map<Integer, DialMethod> methodByViewId = new HashMap<>();
     private EditText timeoutSeconds;
     private Button dialButton;
     private Button cancelButton;
@@ -76,10 +80,12 @@ public final class DialerActivity extends ServiceActivity implements ModemServic
         for (DialMethod m : DialMethod.values()) {
             RadioButton option = new RadioButton(this);
             option.setText(m.name() + " (" + m.prefix() + ")");
-            option.setId(1000 + m.ordinal());
+            int viewId = View.generateViewId();
+            option.setId(viewId);
+            methodByViewId.put(viewId, m);
             method.addView(option);
+            if (m == DialMethod.TONE) method.check(viewId);
         }
-        method.check(1000 + DialMethod.TONE.ordinal());
         root.addView(method);
 
         timeoutSeconds = new EditText(this);
@@ -135,8 +141,8 @@ public final class DialerActivity extends ServiceActivity implements ModemServic
     }
 
     private DialMethod chosenMethod() {
-        int index = method.getCheckedRadioButtonId() - 1000;
-        return index >= 0 && index < DialMethod.values().length ? DialMethod.values()[index] : DialMethod.AUTO;
+        DialMethod selected = methodByViewId.get(method.getCheckedRadioButtonId());
+        return selected == null ? DialMethod.AUTO : selected;
     }
 
     /** Per-call timeout in ms; throws IllegalArgumentException (incl. NumberFormatException). */
