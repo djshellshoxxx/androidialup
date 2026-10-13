@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import socket
 import sys
 from typing import Sequence
 
 from .accessory_discovery import obtain_accessory as _obtain_accessory, wait_for_accessory as _wait_for_accessory
 from .bridge import bridge_socket_to_transport
+from .tcp_listener import serve_one_client
 from .pyusb_backend import (
     PyUsbUnavailable,
     load_pyusb,
@@ -64,21 +64,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         print(f"androidialup-aoa-bridge: {exc}", file=sys.stderr)
         return 2
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server.bind((args.listen_host, args.listen_port))
-        server.listen(1)
-        address = server.getsockname()
-        print(f"AndroidDialup USB DTE listening on {address[0]}:{address[1]}", file=sys.stderr)
-        client, peer = server.accept()
-        with client:
-            print(f"DTE client connected from {peer[0]}:{peer[1]}", file=sys.stderr)
-            try:
-                bridge_socket_to_transport(client, transport)
-            except (OSError, RuntimeError) as exc:
-                print(f"bridge ended: {exc}", file=sys.stderr)
-                return 3
-    return 0
+    return serve_one_client(args.listen_host, args.listen_port, transport, bridge_socket_to_transport)
 
 
 def main() -> None:
