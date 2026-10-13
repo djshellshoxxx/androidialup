@@ -75,6 +75,8 @@ class RelaySession:
         self._outbound = ByteRelaySender()
         self._dial_accepted_frame: Frame | None = None
         self._terminal_sent = False
+        # Only the immediately preceding ended call may have delayed FLOW_STATUS.
+        self._last_ended_call: tuple[bytes, bytes] | None = None
 
     def _frame(self, message, *, request_id: int = 0, call_id: bytes | None = None, session_id: bytes | None = None) -> Frame:
         return Frame(
@@ -166,6 +168,15 @@ class RelaySession:
             ]
 
         if self.state == RelaySessionState.AUTHENTICATED:
+            if (
+                frame.kind == FrameKind.FLOW_STATUS
+                and self._last_ended_call == (frame.call_id, frame.session_id)
+            ):
+                # FLOW_STATUS written by the peer before CALL_TERMINATED may
+                # arrive after backend failure. It has no effect between calls.
+                # Validate the payload before ignoring this one stale credit.
+                decode_payload(frame.kind, frame.payload)
+                return []
             if frame.kind != FrameKind.DIAL_REQUEST:
                 raise ProtocolError(f"DIAL_REQUEST required while authenticated and idle (got {frame.kind.name})")
             if frame.call_id == ZERO_ID:
@@ -185,6 +196,7 @@ class RelaySession:
                     )
                 ]
             self.call_id = frame.call_id
+            self._last_ended_call = None
             self.session_id = self.session_id_factory()
             if len(self.session_id) != 16 or self.session_id == ZERO_ID:
                 raise RuntimeError("session_id_factory must return nonzero 16-byte IDs")
@@ -341,6 +353,8 @@ class RelaySession:
         return out
 
     def _reset_call(self, *, keep_terminal: bool = False) -> None:
+        if self.call_id != ZERO_ID and self.session_id != ZERO_ID:
+            self._last_ended_call = (self.call_id, self.session_id)
         self.state = RelaySessionState.AUTHENTICATED
         self.call_id = ZERO_ID
         self.session_id = ZERO_ID
