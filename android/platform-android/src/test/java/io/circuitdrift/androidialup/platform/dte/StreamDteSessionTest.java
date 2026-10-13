@@ -204,6 +204,43 @@ public final class StreamDteSessionTest {
         }
     }
 
+
+    @Test
+    public void modemHangupExceptionCannotSuppressStreamClosedNotification() throws Exception {
+        PipePair pipes = new PipePair();
+        CountDownLatch dialed = new CountDownLatch(1);
+        CountDownLatch notified = new CountDownLatch(1);
+        AtomicReference<String> reason = new AtomicReference<>();
+        SessionPort failingBackend = new SessionPort() {
+            @Override public void dial(String target) { dialed.countDown(); }
+            @Override public void answer() {}
+            @Override public void writeData(byte[] data) {}
+            @Override public void hangup(String why) {
+                throw new IllegalStateException("backend already failed");
+            }
+        };
+        StreamDteSession session = new StreamDteSession(pipes.sessionInput, pipes.sessionOutput,
+                (writer, executor) -> new ModemController(failingBackend, writer, "cleanup-test"),
+                new StreamDteSession.Listener() {
+                    @Override public void onClosed(String why) {
+                        reason.set(why);
+                        notified.countDown();
+                    }
+                }, 10, 1024, 8, System::nanoTime);
+        try {
+            session.start();
+            pipes.hostOutput.write("ATDloopback\r".getBytes(StandardCharsets.US_ASCII));
+            pipes.hostOutput.flush();
+            assertTrue("dial did not reach backend", dialed.await(2, TimeUnit.SECONDS));
+            pipes.hostOutput.close();
+            assertTrue("backend exception swallowed onClosed", notified.await(3, TimeUnit.SECONDS));
+            assertEquals("DTE_EOF", reason.get());
+            assertTrue(session.isClosed());
+        } finally {
+            session.close();
+        }
+    }
+
     private static String readUntil(InputStream input, String needle, long timeoutMs) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
         ByteArrayOutputStream received = new ByteArrayOutputStream();
