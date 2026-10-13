@@ -227,6 +227,50 @@ class RelayServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(self.server.connections)
             self.assertFalse(self.server._client_tasks)
 
+    async def test_pre_tls_client_is_disconnected_after_handshake_deadline(self):
+        await self.server.close()
+        self.server = RelayTcpServer(
+            "127.0.0.1",
+            0,
+            self.server_context,
+            credential_store=InMemoryDeviceCredentialStore({ENDPOINT_ID: DEVICE_SECRET}),
+            tls_handshake_timeout=0.25,
+        )
+        await self.server.start()
+        host, port = self.server.address
+
+        # A raw TCP client never performs TLS; it must not retain the socket for
+        # the much longer library-default handshake timeout.
+        raw_reader, raw_writer = await asyncio.open_connection(host, port)
+        try:
+            try:
+                closed = await asyncio.wait_for(raw_reader.read(1), timeout=2.0)
+                self.assertEqual(closed, b"")
+            except ConnectionResetError:
+                pass
+        finally:
+            raw_writer.close()
+            try:
+                await raw_writer.wait_closed()
+            except ConnectionError:
+                pass
+
+        healthy = await self.open_client()
+        try:
+            await healthy.send_frame(frame_for(Hello("AndroidDialup", "0.1", 1, 1, ENDPOINT_ID, ())))
+            self.assertEqual((await healthy.recv_frame()).kind, FrameKind.HELLO_ACK)
+        finally:
+            await healthy.close()
+
+    async def test_tls_handshake_timeout_must_be_finite_positive(self):
+        for value in (0.0, -1.0, float("nan"), float("inf")):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    RelayTcpServer(
+                        "127.0.0.1", 0, self.server_context,
+                        tls_handshake_timeout=value,
+                    )
+
     async def test_invalid_relay_limits_are_rejected(self):
         with self.assertRaises(ValueError):
             RelayTcpServer("127.0.0.1", 0, self.server_context, max_clients=0)
