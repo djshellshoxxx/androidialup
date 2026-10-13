@@ -1,0 +1,65 @@
+name: Cross-platform Build Audit
+
+on:
+  push:
+    paths:
+      - 'android/**'
+      - 'prototype/python/**'
+      - '.github/workflows/cross-platform-build-audit.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'prototype/python/**'
+      - '.github/workflows/cross-platform-build-audit.yml'
+  workflow_dispatch:
+
+jobs:
+  android-release-and-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install Android SDK 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.6.0'
+      - name: Check API 26 source compatibility
+        working-directory: android
+        run: python3 verify_api26_compat.py
+      - name: Build unsigned release APK and run Android lint
+        working-directory: android
+        run: gradle :app:assembleRelease :app:lintDebug :platform-android:lintDebug --stacktrace
+      - name: Upload build and lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-audit
+          if-no-files-found: ignore
+          path: |
+            android/app/build/outputs/apk/release/
+            android/app/build/reports/lint-results*
+            android/platform-android/build/reports/lint-results*
+
+  python-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: prototype/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check that OpenSSL is available for TLS tests
+        run: openssl version
+      - name: Compile all Python modules
+        run: python -m compileall -q .
+      - name: Run Windows host and relay Python tests
+        run: python -m unittest discover -s tests -v
