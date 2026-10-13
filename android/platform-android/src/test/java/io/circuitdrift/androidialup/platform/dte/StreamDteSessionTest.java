@@ -234,7 +234,10 @@ public final class StreamDteSessionTest {
             assertTrue("dial did not reach backend", dialed.await(2, TimeUnit.SECONDS));
             pipes.hostOutput.close();
             assertTrue("backend exception swallowed onClosed", notified.await(3, TimeUnit.SECONDS));
-            assertEquals("DTE_EOF", reason.get());
+            // PipedInputStream may surface a closed writer as EOF or as an IOException,
+            // depending on the reader/writer thread scheduling. Both must notify.
+            assertTrue("unexpected transport close reason: " + reason.get(),
+                    "DTE_EOF".equals(reason.get()) || "DTE_READ_FAILURE".equals(reason.get()));
             assertTrue(session.isClosed());
         } finally {
             session.close();
