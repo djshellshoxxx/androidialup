@@ -10,11 +10,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .usb_endpoints import (
+    USB_ENDPOINT_IN,  # legacy import compatibility
+    USB_TRANSFER_TYPE_MASK,
+    USB_TRANSFER_TYPE_BULK,
+    select_bulk_endpoints,
+)
+
 GOOGLE_VENDOR_ID = 0x18D1
 ACCESSORY_PRODUCT_IDS = (0x2D00, 0x2D01)
-USB_ENDPOINT_IN = 0x80
-USB_TRANSFER_TYPE_MASK = 0x03
-USB_TRANSFER_TYPE_BULK = 0x02
 
 
 class PyUsbUnavailable(RuntimeError):
@@ -83,17 +87,5 @@ def open_bulk_transport(device: Any, *, timeout_ms: int = 0) -> BulkTransport:
     configuration = device.get_active_configuration()
     interface = configuration[(0, 0)]
 
-    in_endpoint = None
-    out_endpoint = None
-    for endpoint in interface:
-        if (int(endpoint.bmAttributes) & USB_TRANSFER_TYPE_MASK) != USB_TRANSFER_TYPE_BULK:
-            continue
-        if int(endpoint.bEndpointAddress) & USB_ENDPOINT_IN:
-            if in_endpoint is None:
-                in_endpoint = endpoint
-        elif out_endpoint is None:
-            out_endpoint = endpoint
-
-    if in_endpoint is None or out_endpoint is None:
-        raise RuntimeError("AOA interface does not expose both bulk IN and OUT endpoints")
+    in_endpoint, out_endpoint = select_bulk_endpoints(interface)
     return BulkTransport(in_endpoint, out_endpoint, timeout_ms)
