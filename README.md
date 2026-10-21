@@ -160,3 +160,7 @@ above. The network screen should still show your Wi-Fi/cellular selection.
 **Run: relay connection fails on Android 10–12.**
 Some core utilities were made safe for older Android, but if you hit a crash on
 API 26–32, prefer Android 13+ for now and please open an issue with the logcat.
+
+## Wiki
+
+Wiki source pages are in [docs/wiki/](docs/wiki/Home.md): developer guide, architecture summary and codebase map. The specifications in `docs/` remain the authority.
