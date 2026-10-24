@@ -1,5 +1,7 @@
 # AndroidDialup
 
+> **Architecture addendum 2026-10-24:** The selected direction is an Android control UI for a user-controlled external SIP/dial-up server, not a modem over the phone's cellular voice/baseband path. See [the S1 amendment](docs/spec/S1_AMENDMENT_EXTERNAL_SIP_CONTROL_2026-10-24.md) for server-side modem requirements, superseded alternatives and hardware qualification gates. Implementation remains deferred.
+
 AndroidDialup is an experimental Android-based dial-up modem platform intended to expose a legacy modem-style DTE interface (AT commands plus serial-style data) while allowing the remote connection to travel over modern IP networks and, where practical, legacy/voice-band paths.
 
 The project is research-first. Beta 0.1 will be built from a sourced engineering specification rather than from ad-hoc implementation decisions.
